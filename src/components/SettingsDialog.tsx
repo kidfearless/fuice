@@ -349,6 +349,18 @@ export function SettingsDialog() {
               </Button>
             </div>
           </section>
+
+          <p className="text-xs text-muted-foreground">
+            Project repo:{' '}
+            <a
+              href="https://github.com/kidfearless/fuice"
+              target="_blank"
+              rel="noreferrer"
+              className="underline"
+            >
+              kidfearless/fuice
+            </a>
+          </p>
         </div>
       </DialogContent>
     </Dialog>

@@ -118,6 +118,16 @@ describe('SettingsDialog', () => {
     expect(screen.getByText('Reset')).toBeInTheDocument()
   })
 
+  it('shows a link to the project repository', async () => {
+    const userEvent = (await import('@testing-library/user-event')).default
+    const user = userEvent.setup()
+    render(<SettingsDialog />)
+    await user.click(screen.getByText('Settings'))
+
+    const repoLink = screen.getByRole('link', { name: 'kidfearless/fuice' })
+    expect(repoLink).toHaveAttribute('href', 'https://github.com/kidfearless/fuice')
+  })
+
   it('sends a test notification from settings', async () => {
     const userEvent = (await import('@testing-library/user-event')).default
     const user = userEvent.setup()
