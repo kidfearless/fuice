@@ -1,0 +1,18 @@
+<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+  <!-- Dark Background -->
+  <rect width="100" height="100" fill="#1E1B2E" />
+  <!-- Cyan Ring with Inner Cutout -->
+  <path fill="#54F0FD" fill-rule="evenodd" d="
+    M 50 8
+    A 42 42 0 1 1 50 92
+    A 42 42 0 1 1 50 8
+    Z
+    M 50 78
+    A 28 28 0 0 0 62 75.3
+    L 62 62
+    L 69.8 69.8
+    A 28 28 0 0 0 50 22
+    A 28 28 0 0 0 50 78
+    Z
+  "/>
+</svg>

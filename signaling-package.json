@@ -1,0 +1,17 @@
+{
+  "name": "p2p-chat-signaling-server",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "WebSocket signaling server for P2P chat application",
+  "main": "signaling-server.js",
+  "scripts": {
+    "start": "node signaling-server.js"
+  },
+  "keywords": ["webrtc", "signaling", "websocket", "p2p"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "ws": "^8.18.0",
+    "web-push": "^3.6.7"
+  }
+}

@@ -1,0 +1,14 @@
+FROM node:18-alpine
+
+WORKDIR /app
+
+COPY signaling-server.js .
+COPY signaling-package.json package.json
+
+RUN npm install --production
+
+EXPOSE 3001
+
+ENV PORT=3001
+
+CMD ["node", "signaling-server.js"]

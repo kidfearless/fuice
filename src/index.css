@@ -1,0 +1,220 @@
+@import 'tailwindcss';
+@import "tw-animate-css";
+
+@layer base {
+  * {
+    @apply border-border
+  }
+}
+
+:root {
+  --background: #313338;
+  --foreground: #f2f3f5;
+  --app-font-scale: 1;
+  
+  --card: #2b2d31;
+  --card-foreground: #f2f3f5;
+  
+  --popover: #2b2d31;
+  --popover-foreground: #f2f3f5;
+  
+  --primary: #5865f2;
+  --primary-foreground: #ffffff;
+  
+  --secondary: #2b2d31;
+  --secondary-foreground: #f2f3f5;
+  
+  --muted: #1e1f22;
+  --muted-foreground: #b5bac1;
+  
+  --accent: #5865f2;
+  --accent-foreground: #ffffff;
+  
+  --destructive: #ed4245;
+  --destructive-foreground: #ffffff;
+  
+  --success: #23a55a;
+  --success-foreground: #ffffff;
+  
+  --border: #3f4147;
+  --input: #383a40;
+  --ring: #5865f2;
+  
+  --radius: 0.5rem;
+  
+  --sidebar: #2b2d31;
+  --sidebar-foreground: #f2f3f5;
+  --sidebar-border: #1e1f22;
+}
+
+html {
+  font-size: calc(16px * var(--app-font-scale));
+}
+
+@theme {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  
+  --radius-sm: calc(var(--radius) * 0.5);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) * 1.5);
+  --radius-xl: calc(var(--radius) * 2);
+  --radius-2xl: calc(var(--radius) * 3);
+  --radius-full: 9999px;
+
+  --font-sans: 'gg sans', 'Noto Sans', system-ui, sans-serif;
+  --font-display: 'gg sans', 'Noto Sans', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+@layer base {
+  body {
+    @apply bg-background text-foreground;
+    font-family: var(--font-sans);
+  }
+  
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-display);
+  }
+  
+  code, pre {
+    font-family: var(--font-mono);
+  }
+}
+
+.gradient-mesh {
+  background: 
+    radial-gradient(circle at 20% 50%, oklch(0.35 0.15 290 / 0.3) 0%, transparent 50%),
+    radial-gradient(circle at 80% 80%, oklch(0.75 0.15 195 / 0.2) 0%, transparent 50%),
+    oklch(0.12 0.01 260);
+}
+
+.connection-pulse {
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+@keyframes pulse-glow {
+  0%, 100% {
+    box-shadow: 0 0 5px oklch(0.75 0.15 195 / 0.5);
+  }
+  50% {
+    box-shadow: 0 0 20px oklch(0.75 0.15 195 / 0.8);
+  }
+}
+
+.speaking-indicator {
+  animation: speaking-pulse 0.5s ease-in-out infinite;
+}
+
+@keyframes speaking-pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+    box-shadow: 0 0 0 0 oklch(0.65 0.18 145 / 0.7);
+  }
+  50% {
+    opacity: 0.9;
+    transform: scale(1.15);
+    box-shadow: 0 0 0 3px oklch(0.65 0.18 145 / 0);
+  }
+}
+
+/* Discord-style voice channel styles */
+.voice-control-bar {
+  background: #1e1f22;
+}
+
+.voice-user-tile {
+  transition: box-shadow 0.15s ease, transform 0.1s ease;
+}
+
+.voice-user-tile.speaking {
+  box-shadow: 0 0 0 2px #23a55a, 0 0 12px rgba(35, 165, 90, 0.25);
+}
+
+/* Smooth video tile transitions */
+video {
+  transition: opacity 0.2s ease;
+}
+
+/* Discord-style scrollbar for voice user list */
+.voice-users-scroll::-webkit-scrollbar {
+  width: 4px;
+}
+
+.voice-users-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.voice-users-scroll::-webkit-scrollbar-thumb {
+  background: #1e1f22;
+  border-radius: 2px;
+}
+
+/* Voice connected bar animation */
+@keyframes voice-connected-pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+/* Mobile-specific styles */
+@media (max-width: 767px) {
+  /* Use dynamic viewport height for mobile browsers */
+  .h-screen {
+    height: 100dvh;
+  }
+
+  /* Larger touch targets */
+  button, [role="button"], a {
+    min-height: 36px;
+    min-width: 36px;
+  }
+
+  /* Prevent text size adjustment on orientation change */
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+
+  /* Safe area insets for notched devices */
+  body {
+    padding:
+      env(safe-area-inset-top)
+      env(safe-area-inset-right)
+      env(safe-area-inset-bottom)
+      env(safe-area-inset-left);
+  }
+
+  /* Prevent mobile zoom on input focus */
+  input, textarea, select {
+    font-size: 16px !important;
+  }
+
+  /* Prevent overscroll bounce effect */
+  html, body {
+    overscroll-behavior: none;
+  }
+}
