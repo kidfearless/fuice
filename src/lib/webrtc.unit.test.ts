@@ -495,6 +495,22 @@ describe('WebRTCManager', () => {
     manager.disconnect()
   })
 
+  it('attaches existing audio stream to peers created later', async () => {
+    const manager = new WebRTCManager('user-1', 'Alice', 'room-1')
+    const audioTrack = { id: 'a1', kind: 'audio' } as unknown as MediaStreamTrack
+    const mockStream = {
+      getTracks: () => [audioTrack],
+    } as unknown as MediaStream
+
+    await manager.addAudioStream(mockStream)
+
+    const peerJoinedCb = mockSignaling.onPeerJoined.mock.calls[0][0]
+    await peerJoinedCb({ id: 'peer-2', username: 'Bob' })
+
+    expect(mockPCs[0].addTrack).toHaveBeenCalledWith(audioTrack, mockStream)
+    manager.disconnect()
+  })
+
   it('handles peer connection state changes', async () => {
     const onConnected = vi.fn()
     const onDisconnected = vi.fn()

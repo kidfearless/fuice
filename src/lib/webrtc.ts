@@ -17,6 +17,7 @@ export class WebRTCManager {
   private fileTransferManager: FileTransferManager
   private cb: WebRTCCallbacks = {}
   private nego: NegotiationState = createNegotiationState()
+  private localAudioStream: MediaStream | null = null
   private localScreenShareStream: MediaStream | null = null
   private localCameraStream: MediaStream | null = null
   private screenShareSubscribers: Set<string> = new Set()
@@ -164,10 +165,32 @@ export class WebRTCManager {
     }
 
     this.peers.set(peerId, peer)
+    this.attachAudioStreamToPeer(peerId)
     if (this.localScreenShareStream && this.screenShareSubscribers.has(peerId)) {
       this.attachScreenTrackToPeer(peerId)
     }
     return peer
+  }
+
+  private attachAudioStreamToPeer(peerId: string) {
+    const peer = this.peers.get(peerId)
+    if (!peer?.connection || !this.localAudioStream) return
+
+    const existingTracks = new Set(
+      peer.connection
+        .getSenders()
+        .map(sender => sender.track)
+        .filter((track): track is MediaStreamTrack => track !== null)
+    )
+
+    for (const track of this.localAudioStream.getTracks()) {
+      if (existingTracks.has(track)) continue
+      try {
+        peer.connection.addTrack(track, this.localAudioStream)
+      } catch (error) {
+        console.error('Failed to attach audio track to peer:', peerId, error)
+      }
+    }
   }
 
   private attachScreenTrackToPeer(peerId: string) {
@@ -317,8 +340,16 @@ export class WebRTCManager {
   }
 
   async sendFile(file: File, message: Message) { return sendFileToPeers(this.peers, this.fileTransferManager, file, message) }
-  async addAudioStream(stream: MediaStream) { addStreamToPeers(this.peers, stream) }
-  async removeAudioStream(stream: MediaStream) { removeStreamFromPeers(this.peers, stream) }
+  async addAudioStream(stream: MediaStream) {
+    this.localAudioStream = stream
+    addStreamToPeers(this.peers, stream)
+  }
+  async removeAudioStream(stream: MediaStream) {
+    removeStreamFromPeers(this.peers, stream)
+    if (this.localAudioStream === stream) {
+      this.localAudioStream = null
+    }
+  }
   addCameraStream(stream: MediaStream) {
     this.localCameraStream = stream
     const [videoTrack] = stream.getVideoTracks()
@@ -345,6 +376,7 @@ export class WebRTCManager {
   }
   getPeers(): Peer[] { return Array.from(this.peers.values()) }
   disconnect() {
+    this.localAudioStream = null
     this.setLocalScreenShareStream(null)
     this.screenShareSubscribers.clear()
     this.peers.forEach(p => { p.dataChannel?.close(); p.connection?.close() })
