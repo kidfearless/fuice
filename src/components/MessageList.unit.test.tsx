@@ -91,4 +91,32 @@ describe('MessageList', () => {
     const bobElements = screen.getAllByText('Bob')
     expect(bobElements.length).toBeGreaterThanOrEqual(1)
   })
+
+  it('renders discord markdown formatting in messages', () => {
+    Object.assign(mockContext, createMockP2PContext({
+      messages: [
+        makeMsg('m1', '**Bold** __Underline__ ||Secret|| [Link](https://example.com)'),
+      ],
+    }))
+
+    const { container } = render(<MessageList />)
+    expect(container.querySelector('strong')?.textContent).toBe('Bold')
+    expect(container.querySelector('u')?.textContent).toBe('Underline')
+    expect(container.querySelector('.discord-spoiler')?.textContent).toBe('Secret')
+    const link = container.querySelector('a[href="https://example.com"]')
+    expect(link).toBeTruthy()
+    expect(link?.getAttribute('target')).toBe('_blank')
+  })
+
+  it('does not render unsafe markdown links', () => {
+    Object.assign(mockContext, createMockP2PContext({
+      messages: [
+        makeMsg('m1', '[Click me](javascript:alert(1))'),
+      ],
+    }))
+
+    const { container } = render(<MessageList />)
+    expect(container.querySelector('a[href^="javascript:"]')).toBeNull()
+    expect(screen.getByText('Click me')).toBeInTheDocument()
+  })
 })

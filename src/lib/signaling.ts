@@ -92,8 +92,9 @@ export class SignalingClient {
   }
 
   private getSignalingServerUrl(): string {
-    if (import.meta.env.VITE_SIGNALING_URL) {
-      return import.meta.env.VITE_SIGNALING_URL
+    const envUrl = import.meta.env.VITE_SIGNALING_URL as string | undefined
+    if (envUrl && !this.isPlaceholderSignalingUrl(envUrl)) {
+      return envUrl
     }
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -105,6 +106,11 @@ export class SignalingClient {
     }
     
     return `${protocol}//${host}:${port}`
+  }
+
+  private isPlaceholderSignalingUrl(url: string): boolean {
+    const normalized = url.toLowerCase()
+    return normalized.includes('your-app-signaling') || normalized.includes('example.com')
   }
 
   private attemptReconnect(wsUrl: string) {

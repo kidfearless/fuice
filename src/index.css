@@ -170,6 +170,51 @@ video {
   border-radius: 2px;
 }
 
+.discord-markdown {
+  word-break: break-word;
+}
+
+.discord-markdown p {
+  margin: 0;
+}
+
+.discord-markdown p + p {
+  margin-top: 0.25rem;
+}
+
+.discord-markdown a {
+  @apply text-primary underline;
+}
+
+.discord-markdown blockquote {
+  @apply border-l-2 border-border text-muted-foreground pl-3;
+}
+
+.discord-markdown :not(pre) > code {
+  @apply rounded bg-muted px-1 py-0.5 text-[0.9em] font-mono;
+}
+
+.discord-markdown pre {
+  @apply rounded bg-muted p-2 overflow-x-auto;
+}
+
+.discord-markdown pre code {
+  @apply bg-transparent p-0;
+}
+
+.discord-markdown ul,
+.discord-markdown ol {
+  @apply my-1 pl-5;
+}
+
+.discord-markdown .discord-spoiler {
+  @apply rounded bg-foreground/20 text-transparent px-1;
+}
+
+.discord-markdown .discord-spoiler:hover {
+  @apply text-foreground;
+}
+
 /* Voice connected bar animation */
 @keyframes voice-connected-pulse {
   0%, 100% {

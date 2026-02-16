@@ -6,6 +6,7 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { FileMessage } from '@/components/FileMessage'
 import { Button } from '@/components/ui/button'
 import { MessageReactions, AddReactionButton } from '@/components/MessageReactions'
+import { MessageContent } from '@/components/MessageContent'
 import { formatTime } from '@/lib/helpers'
 
 export function MessageList() {
@@ -208,9 +209,10 @@ export function MessageList() {
                       {hasFile ? (
                         <div className="space-y-2">
                           {message.content && (
-                            <p className="text-[15px] leading-[1.375rem] break-words text-foreground/95">
-                              {message.content}
-                            </p>
+                            <MessageContent
+                              content={message.content}
+                              className="text-[15px] leading-[1.375rem] break-words text-foreground/95"
+                            />
                           )}
                           <FileMessage 
                             metadata={message.fileMetadata!} 
@@ -227,9 +229,10 @@ export function MessageList() {
                           />
                         </div>
                       ) : (
-                        <p className="text-[15px] leading-[1.375rem] break-words text-foreground/95">
-                          {message.content}
-                        </p>
+                        <MessageContent
+                          content={message.content}
+                          className="text-[15px] leading-[1.375rem] break-words text-foreground/95"
+                        />
                       )}
                       <MessageReactions messageId={message.id} reactions={message.reactions} />
                     </div>
@@ -239,9 +242,10 @@ export function MessageList() {
                     {hasFile ? (
                       <div className="space-y-2">
                         {message.content && (
-                          <p className="text-[15px] leading-[1.375rem] break-words text-foreground/95">
-                            {message.content}
-                          </p>
+                          <MessageContent
+                            content={message.content}
+                            className="text-[15px] leading-[1.375rem] break-words text-foreground/95"
+                          />
                         )}
                         <FileMessage 
                           metadata={message.fileMetadata!} 
@@ -258,9 +262,10 @@ export function MessageList() {
                         />
                       </div>
                     ) : (
-                      <p className="text-[15px] leading-[1.375rem] break-words text-foreground/95">
-                        {message.content}
-                      </p>
+                      <MessageContent
+                        content={message.content}
+                        className="text-[15px] leading-[1.375rem] break-words text-foreground/95"
+                      />
                     )}
                     <MessageReactions messageId={message.id} reactions={message.reactions} compact />
                   </div>

@@ -23,9 +23,10 @@ function urlBase64ToUint8Array(base64String: string): Uint8Array {
 
 /** Build the HTTP base URL that corresponds to the signaling server. */
 function getSignalingHttpUrl(): string {
-  if (import.meta.env.VITE_SIGNALING_URL) {
+  const envUrl = import.meta.env.VITE_SIGNALING_URL as string | undefined
+  if (envUrl && !isPlaceholderSignalingUrl(envUrl)) {
     // Convert ws(s):// to http(s)://
-    return import.meta.env.VITE_SIGNALING_URL
+    return envUrl
       .replace(/^wss:/, 'https:')
       .replace(/^ws:/, 'http:')
   }
@@ -33,6 +34,11 @@ function getSignalingHttpUrl(): string {
   const host = window.location.hostname
   const port = import.meta.env.VITE_SIGNALING_PORT || '3001'
   return `${protocol}//${host}:${port}`
+}
+
+function isPlaceholderSignalingUrl(url: string): boolean {
+  const normalized = url.toLowerCase()
+  return normalized.includes('your-app-signaling') || normalized.includes('example.com')
 }
 
 let cachedVapidKey: string | null = null

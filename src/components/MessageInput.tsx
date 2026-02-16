@@ -1,6 +1,6 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useP2P } from '@/lib/P2PContext'
-import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
 import { Button } from '@/components/ui/button'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import { faPaperPlane, faPaperclip } from '@fortawesome/free-solid-svg-icons'
@@ -37,6 +37,7 @@ export function MessageInput() {
   const [isSending, setIsSending] = useState(false)
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const messageInputRef = useRef<HTMLTextAreaElement>(null)
 
   const slashQuery = useMemo(() => {
     const trimmedStart = message.trimStart()
@@ -121,6 +122,25 @@ export function MessageInput() {
     }
   }
 
+  useEffect(() => {
+    const textarea = messageInputRef.current
+    if (!textarea) return
+
+    textarea.style.height = 'auto'
+
+    const style = window.getComputedStyle(textarea)
+    const lineHeight = Number.parseFloat(style.lineHeight) || 20
+    const paddingTop = Number.parseFloat(style.paddingTop) || 0
+    const paddingBottom = Number.parseFloat(style.paddingBottom) || 0
+    const borderTop = Number.parseFloat(style.borderTopWidth) || 0
+    const borderBottom = Number.parseFloat(style.borderBottomWidth) || 0
+    const maxHeight = lineHeight * 20 + paddingTop + paddingBottom + borderTop + borderBottom
+
+    const nextHeight = Math.min(textarea.scrollHeight, maxHeight)
+    textarea.style.height = `${nextHeight}px`
+    textarea.style.overflowY = textarea.scrollHeight > maxHeight ? 'auto' : 'hidden'
+  }, [message])
+
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
@@ -191,7 +211,7 @@ export function MessageInput() {
             </div>
           </div>
         )}
-      <div className="flex items-center gap-1.5 rounded-lg bg-input px-2 sm:px-3 h-11">
+      <div className="flex items-end gap-1.5 rounded-lg bg-input px-2 py-1.5 sm:px-3">
         <input
           ref={fileInputRef}
           type="file"
@@ -207,7 +227,8 @@ export function MessageInput() {
         >
           <FontAwesomeIcon icon={faPaperclip} className="text-[18px]" />
         </Button>
-        <Input
+        <Textarea
+          ref={messageInputRef}
           placeholder={`Message #${currentChannel.name}`}
           value={message}
           onChange={(e) => {
@@ -215,7 +236,8 @@ export function MessageInput() {
             setSelectedCommandIndex(0)
           }}
           onKeyDown={handleKeyDown}
-          className="flex-1 h-10 border-0 bg-transparent shadow-none px-1.5 text-[15px] focus-visible:ring-0 focus-visible:border-0"
+          rows={1}
+          className="flex-1 min-h-8 resize-none border-0 bg-transparent shadow-none px-1.5 py-1 text-[15px] leading-[1.35] focus-visible:ring-0 focus-visible:border-0"
           id="message-input"
         />
         <Button 

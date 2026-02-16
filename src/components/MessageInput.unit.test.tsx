@@ -48,6 +48,15 @@ describe('MessageInput', () => {
     expect(mockContext.sendMessage).toHaveBeenCalledWith('Hello world')
   })
 
+  it('adds a newline on Shift+Enter and does not send immediately', async () => {
+    const user = userEvent.setup()
+    render(<MessageInput />)
+    const input = screen.getByPlaceholderText('Message #general')
+    await user.type(input, 'Hello{Shift>}{Enter}{/Shift}world')
+    expect(mockContext.sendMessage).not.toHaveBeenCalled()
+    expect(input).toHaveValue('Hello\nworld')
+  })
+
   it('does not send empty message', async () => {
     const user = userEvent.setup()
     render(<MessageInput />)
