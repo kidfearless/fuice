@@ -1,5 +1,6 @@
-import { useState, useEffect, useMemo } from 'react'
-import { useP2P } from '@/lib/P2PContext'
+import React, { Component } from 'react'
+import { P2PContextType } from '@/lib/P2PContextTypes'
+import { P2PContext } from '@/lib/P2PContext'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import {
   faChevronDown,
@@ -20,35 +21,51 @@ import { loadNotificationSettings, getNotificationPermission } from '@/lib/notif
 
 type StatusLevel = 'good' | 'warn' | 'off'
 
-function StatusRow({ icon, label, value, level }: {
+class StatusRow extends Component<{
   icon: typeof faLock
   label: string
   value: string
   level: StatusLevel
-}) {
-  const color =
-    level === 'good' ? 'text-[#23a55a]' :
-    level === 'warn' ? 'text-[#f0b232]' :
-    'text-[#b5bac1]'
-  return (
-    <div className="flex items-center gap-2.5 py-1">
-      <FontAwesomeIcon icon={icon} className={`text-[13px] w-4 ${color}`} />
-      <div className="flex-1 min-w-0">
-        <span className="text-[13px] text-[#dbdee1]">{label}</span>
+}> {
+  private get icon() { return this.componentProps.icon }
+  private get label() { return this.componentProps.label }
+  private get value() { return this.componentProps.value }
+  private get level() { return this.componentProps.level }
+
+  render() {
+    const icon = this.icon
+    const label = this.label
+    const value = this.value
+    const level = this.level
+    const color =
+      level === 'good' ? 'text-[#23a55a]' :
+      level === 'warn' ? 'text-[#f0b232]' :
+      'text-[#b5bac1]'
+    return (
+      <div className="flex items-center gap-2.5 py-1">
+        <FontAwesomeIcon icon={icon} className={`text-[13px] w-4 ${color}`} />
+        <div className="flex-1 min-w-0">
+          <span className="text-[13px] text-[#dbdee1]">{label}</span>
+        </div>
+        <span className={`text-[12px] font-medium ${color}`}>{value}</span>
       </div>
-      <span className={`text-[12px] font-medium ${color}`}>{value}</span>
-    </div>
-  )
+    )
+  }
 }
 
-function ApiDot({ ok }: { ok: boolean }) {
-  return (
-    <span
-      className={`inline-block w-[7px] h-[7px] rounded-full flex-shrink-0 ${
-        ok ? 'bg-[#23a55a]' : 'bg-[#ed4245]'
-      }`}
-    />
-  )
+class ApiDot extends Component<{ ok: boolean }> {
+  private get ok() { return this.componentProps.ok }
+
+  render() {
+    const ok = this.ok
+    return (
+      <span
+        className={`inline-block w-[7px] h-[7px] rounded-full flex-shrink-0 ${
+          ok ? 'bg-[#23a55a]' : 'bg-[#ed4245]'
+        }`}
+      />
+    )
+  }
 }
 
 interface WebApiEntry {
@@ -58,7 +75,9 @@ interface WebApiEntry {
 }
 
 function detectWebApis(): WebApiEntry[] {
-  const g = globalThis as Record<string, unknown>
+  const globalWithWebkitAudio = globalThis as typeof globalThis & {
+    webkitAudioContext?: unknown
+  }
   return [
     {
       name: 'WebRTC',
@@ -72,7 +91,7 @@ function detectWebApis(): WebApiEntry[] {
     },
     {
       name: 'Web Audio',
-      available: typeof AudioContext !== 'undefined' || typeof (g as Record<string, unknown>).webkitAudioContext !== 'undefined',
+      available: typeof AudioContext !== 'undefined' || typeof globalWithWebkitAudio.webkitAudioContext !== 'undefined',
       usage: 'Voice activity & sound effects',
     },
     {
@@ -123,127 +142,141 @@ function detectWebApis(): WebApiEntry[] {
   ]
 }
 
-export function ServerStatus() {
-  const { isSignalingConnected, peers, hasRoomKey, currentRoom } = useP2P()
-  const [swActive, setSwActive] = useState(false)
-  const [notifStatus, setNotifStatus] = useState<'enabled' | 'disabled' | 'denied'>('disabled')
-
-  const webApis = useMemo(detectWebApis, [])
-  const apisAvailable = webApis.filter(a => a.available).length
-  const apisTotal = webApis.length
-
-  useEffect(() => {
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.getRegistration().then(reg => {
-        setSwActive(!!reg?.active)
-      })
-    }
-
-    const ns = loadNotificationSettings()
-    const perm = getNotificationPermission()
-    if (perm === 'denied') setNotifStatus('denied')
-    else if (ns.desktopEnabled && perm === 'granted') setNotifStatus('enabled')
-    else setNotifStatus('disabled')
-  }, [])
-
-  const handleOpenChange = (open: boolean) => {
-    if (!open) return
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.getRegistration().then(reg => {
-        setSwActive(!!reg?.active)
-      })
-    }
-    const ns = loadNotificationSettings()
-    const perm = getNotificationPermission()
-    if (perm === 'denied') setNotifStatus('denied')
-    else if (ns.desktopEnabled && perm === 'granted') setNotifStatus('enabled')
-    else setNotifStatus('disabled')
+export class ServerStatus extends Component {
+  state = {
+    swActive: false,
+    notifStatus: 'disabled' as 'enabled' | 'disabled' | 'denied',
+    webApis: detectWebApis(),
   }
 
-  if (!currentRoom) return null
+  private get swActive() { return this.state.swActive }
+  private set swActive(swActive: boolean) { this.setState({ swActive }) }
+  private get notifStatus() { return this.state.notifStatus }
+  private set notifStatus(notifStatus: 'enabled' | 'disabled' | 'denied') { this.setState({ notifStatus }) }
+  private get webApis() { return this.state.webApis }
 
-  const peerCount = peers.length
-  const overallLevel: StatusLevel =
-    !isSignalingConnected ? 'warn' :
-    !hasRoomKey ? 'warn' :
-    'good'
+  static contextType = P2PContext
 
-  const overallColor =
-    overallLevel === 'good' ? 'text-[#23a55a]' :
-    overallLevel === 'warn' ? 'text-[#f0b232]' :
-    'text-[#b5bac1]'
+  componentDidMount() {
+    this.refreshSettings()
+  }
 
-  return (
-    <Popover onOpenChange={handleOpenChange}>
-      <PopoverTrigger asChild>
-        <button className="flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors rounded p-0.5 -mr-1">
-          <FontAwesomeIcon icon={faShieldHalved} className={`text-[12px] ${overallColor}`} />
-          <FontAwesomeIcon icon={faChevronDown} className="text-[9px]" />
-        </button>
-      </PopoverTrigger>
-      <PopoverContent side="bottom" align="start" className="w-72 p-0 bg-[#2b2d31] border-black/40">
-        <ScrollArea className="max-h-[70vh]">
-          {/* ── Room Status ─────────────────────────── */}
-          <div className="px-3 py-2.5 border-b border-black/20">
-            <h4 className="text-[11px] font-semibold uppercase tracking-wider text-[#b5bac1]">Room Status</h4>
-          </div>
-          <div className="px-3 py-2 space-y-0.5 border-b border-black/20">
-            <StatusRow
-              icon={isSignalingConnected ? faSignalPerfect : faSignal}
-              label="Signaling"
-              value={isSignalingConnected ? 'Connected' : 'Disconnected'}
-              level={isSignalingConnected ? 'good' : 'warn'}
-            />
-            <StatusRow
-              icon={hasRoomKey ? faLock : faLockOpen}
-              label="Encryption"
-              value={hasRoomKey ? 'Enabled' : 'No Key'}
-              level={hasRoomKey ? 'good' : 'warn'}
-            />
-            <StatusRow
-              icon={peerCount > 0 ? faCircleCheck : faCircleXmark}
-              label="Peers"
-              value={`${peerCount} connected`}
-              level={peerCount > 0 ? 'good' : 'off'}
-            />
-            <StatusRow
-              icon={notifStatus === 'enabled' ? faBell : faBellSlash}
-              label="Notifications"
-              value={notifStatus === 'enabled' ? 'Enabled' : notifStatus === 'denied' ? 'Blocked' : 'Disabled'}
-              level={notifStatus === 'enabled' ? 'good' : notifStatus === 'denied' ? 'warn' : 'off'}
-            />
-            <StatusRow
-              icon={faGears}
-              label="Service Worker"
-              value={swActive ? 'Active' : 'Inactive'}
-              level={swActive ? 'good' : 'off'}
-            />
-            <StatusRow
-              icon={faCircleCheck}
-              label="Background Sync"
-              value={swActive ? 'Available' : 'Unavailable'}
-              level={swActive ? 'good' : 'off'}
-            />
-          </div>
+  refreshSettings = () => {
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.getRegistration().then(reg => {
+        this.swActive = !!reg?.active
+      })
+    }
 
-          {/* ── Web APIs ─────────────────────────────── */}
-          <div className="px-3 py-2.5 border-b border-black/20 flex items-center justify-between">
-            <h4 className="text-[11px] font-semibold uppercase tracking-wider text-[#b5bac1]">Web APIs</h4>
-            <span className={`text-[11px] font-medium ${apisAvailable === apisTotal ? 'text-[#23a55a]' : 'text-[#f0b232]'}`}>
-              {apisAvailable}/{apisTotal}
-            </span>
-          </div>
-          <div className="px-3 py-2 space-y-1">
-            {webApis.map(api => (
-              <div key={api.name} className="flex items-center gap-2 py-0.5">
-                <ApiDot ok={api.available} />
-                <span className="text-[13px] text-[#dbdee1] min-w-0">{api.name}</span>
-                <span className="text-[11px] text-[#80848e] ml-auto flex-shrink-0">{api.usage}</span>
-              </div>
-            ))}
-          </div>
-        </ScrollArea>
-      </PopoverContent>
-    </Popover>
-  )
+    const ns = loadNotificationSettings()
+    const perm = getNotificationPermission()
+    if (perm === 'denied') this.notifStatus = 'denied'
+    else if (ns.desktopEnabled && perm === 'granted') this.notifStatus = 'enabled'
+    else this.notifStatus = 'disabled'
+  }
+
+  handleOpenChange = (open: boolean) => {
+    if (open) this.refreshSettings()
+  }
+
+  render() {
+    const context = this.context as P2PContextType
+    const isSignalingConnected = context.isSignalingConnected
+    const peers = context.peers
+    const hasRoomKey = context.hasRoomKey
+    const currentRoom = context.currentRoom
+    const swActive = this.swActive
+    const notifStatus = this.notifStatus
+    const webApis = this.webApis
+
+    if (!currentRoom) return null
+
+    const peerCount = peers.length
+    const apisAvailable = webApis.filter(a => a.available).length
+    const apisTotal = webApis.length
+
+    const overallLevel: StatusLevel =
+      !isSignalingConnected ? 'warn' :
+      !hasRoomKey ? 'warn' :
+      'good'
+
+    const overallColor =
+      overallLevel === 'good' ? 'text-[#23a55a]' :
+      overallLevel === 'warn' ? 'text-[#f0b232]' :
+      'text-[#b5bac1]'
+
+    return (
+      <Popover onOpenChange={this.handleOpenChange}>
+        <PopoverTrigger asChild>
+          <button className="flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors rounded p-0.5 -mr-1">
+            <FontAwesomeIcon icon={faShieldHalved} className={`text-[12px] ${overallColor}`} />
+            <FontAwesomeIcon icon={faChevronDown} className="text-[9px]" />
+          </button>
+        </PopoverTrigger>
+        <PopoverContent side="bottom" align="start" className="w-72 p-0 bg-[#2b2d31] border-black/40">
+          <ScrollArea className="max-h-[70vh]">
+            {/* ── Room Status ─────────────────────────── */}
+            <div className="px-3 py-2.5 border-b border-black/20">
+              <h4 className="text-[11px] font-semibold uppercase tracking-wider text-[#b5bac1]">Room Status</h4>
+            </div>
+            <div className="px-3 py-2 space-y-0.5 border-b border-black/20">
+              <StatusRow
+                icon={isSignalingConnected ? faSignalPerfect : faSignal}
+                label="Signaling"
+                value={isSignalingConnected ? 'Connected' : 'Disconnected'}
+                level={isSignalingConnected ? 'good' : 'warn'}
+              />
+              <StatusRow
+                icon={hasRoomKey ? faLock : faLockOpen}
+                label="Encryption"
+                value={hasRoomKey ? 'Enabled' : 'No Key'}
+                level={hasRoomKey ? 'good' : 'warn'}
+              />
+              <StatusRow
+                icon={peerCount > 0 ? faCircleCheck : faCircleXmark}
+                label="Peers"
+                value={`${peerCount} connected`}
+                level={peerCount > 0 ? 'good' : 'off'}
+              />
+              <StatusRow
+                icon={notifStatus === 'enabled' ? faBell : faBellSlash}
+                label="Notifications"
+                value={notifStatus === 'enabled' ? 'Enabled' : notifStatus === 'denied' ? 'Blocked' : 'Disabled'}
+                level={notifStatus === 'enabled' ? 'good' : notifStatus === 'denied' ? 'warn' : 'off'}
+              />
+              <StatusRow
+                icon={faGears}
+                label="Service Worker"
+                value={swActive ? 'Active' : 'Inactive'}
+                level={swActive ? 'good' : 'off'}
+              />
+              <StatusRow
+                icon={faCircleCheck}
+                label="Background Sync"
+                value={swActive ? 'Available' : 'Unavailable'}
+                level={swActive ? 'good' : 'off'}
+              />
+            </div>
+
+            {/* ── Web APIs ─────────────────────────────── */}
+            <div className="px-3 py-2.5 border-b border-black/20 flex items-center justify-between">
+              <h4 className="text-[11px] font-semibold uppercase tracking-wider text-[#b5bac1]">Web APIs</h4>
+              <span className={`text-[11px] font-medium ${apisAvailable === apisTotal ? 'text-[#23a55a]' : 'text-[#f0b232]'}`}>
+                {apisAvailable}/{apisTotal}
+              </span>
+            </div>
+            <div className="px-3 py-2 space-y-1">
+              {webApis.map(api => (
+                <div key={api.name} className="flex items-center gap-2 py-0.5">
+                  <ApiDot ok={api.available} />
+                  <span className="text-[13px] text-[#dbdee1] min-w-0">{api.name}</span>
+                  <span className="text-[11px] text-[#80848e] ml-auto flex-shrink-0">{api.usage}</span>
+                </div>
+              ))}
+            </div>
+          </ScrollArea>
+        </PopoverContent>
+      </Popover>
+    )
+  }
 }

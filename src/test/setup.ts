@@ -1,4 +1,13 @@
 import '@testing-library/jest-dom/vitest'
+import { Component } from 'react'
+
+// Mirror the runtime componentProps getter from main.tsx so class components work in tests
+if (!Object.getOwnPropertyDescriptor(Component.prototype, 'componentProps')) {
+  Object.defineProperty(Component.prototype, 'componentProps', {
+    get() { return this.props },
+    configurable: true,
+  })
+}
 
 // jsdom doesn't implement scrollIntoView
 Element.prototype.scrollIntoView = () => {}

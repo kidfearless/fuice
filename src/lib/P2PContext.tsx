@@ -1,4 +1,5 @@
-import { createContext, useContext, useState, useEffect, ReactNode, useRef, useCallback } from 'react'
+import { createContext, useContext, useState, ReactNode, useRef, Component } from 'react'
+import type { Dispatch, MutableRefObject, SetStateAction } from 'react'
 import { WebRTCManager } from '@/lib/webrtc'
 import { saveMessage, saveRoom, getAllRoomHistory, deleteRoomHistory, getMessagesByChannel } from '@/lib/db'
 import type { Room, Message, User, ReactionEvent } from '@/lib/types'
@@ -16,806 +17,1010 @@ import { getRoomKey, saveRoomKey, encryptText, decryptText, extractKeyFromFragme
 
 const MAX_IN_MEMORY_MESSAGES = 500
 
-const P2PContext = createContext<P2PContextType | null>(null)
+export const P2PContext = createContext<P2PContextType | null>(null)
 const INITIAL_HISTORY_MESSAGES = 100
 
-export function useP2P() {
-  const context = useContext(P2PContext)
-  if (!context) throw new Error('useP2P must be used within P2PProvider')
-  return context
+export function useP2P()
+{
+	const context = useContext(P2PContext)
+	if (!context) throw new Error('useP2P must be used within P2PProvider')
+	return context
 }
 
-export function P2PProvider({ children }: { children: ReactNode }) {
-  const { currentUser, setUsername, getDefaultUsername, getUserForRoom, setRoomUsername } = useUser()
-  const [currentRoom, setCurrentRoom] = useState<Room | null>(null)
-  const [webrtcManager, setWebrtcManager] = useState<WebRTCManager | null>(null)
-  const [isSignalingConnected, setIsSignalingConnected] = useState(false)
-  const autoJoinAttempted = useRef(false)
-  const missingKeyNoticePendingRef = useRef(false)
-  const requestedRoomKeyPeerIdsRef = useRef<Set<string>>(new Set())
-  const peerPresenceStateRef = useRef<Map<string, 'joined' | 'left'>>(new Map())
-  const peerNamesRef = useRef<Map<string, string>>(new Map())
-  const pendingJoinAnnouncementRef = useRef<string | null>(null)
-  const voiceStateRef = useRef<{ activeVoiceChannel: string | null; isScreenSharing: boolean; isCameraOn: boolean }>({ activeVoiceChannel: null, isScreenSharing: false, isCameraOn: false })
-
-  const currentRoomRef = useRef(currentRoom)
-  const currentUserRef = useRef(currentUser)
-  const currentUserIdRef = useRef<string | null>(currentUser?.id ?? null)
-  const roomKeyRef = useRef<string | null>(null)
-  currentRoomRef.current = currentRoom
-  currentUserRef.current = currentUser
-  currentUserIdRef.current = currentUser?.id ?? null
-
-  const {
-    channels, setChannels, currentChannel, setCurrentChannel,
-    messages, setMessages, channelsRef, currentChannelRef,
-    createChannel: createChannelAction, selectChannel: selectChannelAction,
-    handleChannelReceived,
-  } = useChannels()
-
-  const {
-    peers, setPeers, remoteStreams, remoteScreenStreams, remoteCameraStreams, speakingUsers, setSpeakingUsers,
-    handlePeerConnected, handlePeerDisconnected, handleRemoteStream,
-    handleRemoteScreenStream, handleRemoteCameraStream, handleVoiceStateChanged, handlePeerSpeaking, handlePeerUserInfo,
-    handlePeerScreenShareStateChanged, handlePeerCameraStateChanged,
-  } = usePeers()
-
-  const voice = useVoice({
-    currentUserRef,
-    webrtcManager,
-    setSpeakingUsers,
-  })
-  voiceStateRef.current = { activeVoiceChannel: voice.activeVoiceChannel, isScreenSharing: voice.isScreenSharing, isCameraOn: voice.isCameraOn }
-
-  const { fileTransfers, handleFileTransferProgress, handleFileReceived, sendFile: sendFileAction } = useFileTransfer({ currentChannelRef })
-
-  const {
-    handleSyncRequested, handleDataChannelReady, handleSyncHello,
-    handleSyncReceived, handleRemoteMessage,
-    handleHistoryRequested, handleHistoryReceived, requestOlderMessages,
-  } = useSync({
-    currentRoomRef, channelsRef, currentChannelRef, currentUserIdRef, roomKeyRef,
-    setCurrentRoom, setChannels, setCurrentChannel, setMessages,
-  })
-
-  // Keep room.channels in sync with channels state
-  useEffect(() => {
-    if (currentRoom) {
-      saveRoom({ ...currentRoom, channels })
-    }
-  }, [channels, currentRoom])
-
-  const postSystemMessage = useCallback((content: string) => {
-    const room = currentRoomRef.current
-    if (!room) return
-
-    const targetChannel = currentChannelRef.current?.type === 'text'
-      ? currentChannelRef.current
-      : channelsRef.current.find(channel => channel.type === 'text') ?? null
-    if (!targetChannel) return
-
-    const notice: Message = {
-      id: `system-${generateMessageId()}`,
-      channelId: targetChannel.id,
-      userId: 'system',
-      username: 'Room Access',
-      content,
-      timestamp: Date.now(),
-      synced: true,
-    }
-
-    void saveMessage(notice)
-      .then(() => {
-        setMessages(prev => {
-          if (prev.some(message => message.id === notice.id)) return prev
-          if (notice.channelId !== currentChannelRef.current?.id) return prev
-          return [...prev, notice].slice(-MAX_IN_MEMORY_MESSAGES)
-        })
-      })
-      .catch(error => console.error('Failed to save system message:', error))
-  }, [channelsRef, currentChannelRef, setMessages])
-
-  const announcePresenceIntent = useCallback(async (
-    manager: WebRTCManager | null,
-    action: 'join' | 'leave',
-    username?: string
-  ): Promise<boolean> => {
-    const trimmed = username?.trim() || ''
-    if (!manager || !trimmed) return false
-    const sent = manager.broadcastPresenceEvent(action, trimmed)
-    if (!sent) return false
-    await new Promise(resolve => setTimeout(resolve, 100))
-    return true
-  }, [])
-
-  const applyReaction = useCallback((reaction: ReactionEvent) => {
-    setMessages(prev => prev.map(msg => {
-      if (msg.id !== reaction.messageId) return msg
-      const reactions = { ...(msg.reactions ?? {}) }
-      const list = [...(reactions[reaction.emoji] ?? [])]
-      if (reaction.action === 'add') {
-        if (!list.some(r => r.userId === reaction.userId)) {
-          list.push({ userId: reaction.userId, username: reaction.username })
-        }
-      } else {
-        const idx = list.findIndex(r => r.userId === reaction.userId)
-        if (idx !== -1) list.splice(idx, 1)
-      }
-      if (list.length > 0) {
-        reactions[reaction.emoji] = list
-      } else {
-        delete reactions[reaction.emoji]
-      }
-      const updated = { ...msg, reactions: Object.keys(reactions).length > 0 ? reactions : undefined }
-      void saveMessage(updated)
-      return updated
-    }))
-  }, [setMessages])
-
-  const setupManager = useCallback((manager: WebRTCManager) => {
-    manager.setCallbacks({
-      onMessageReceived: handleRemoteMessage,
-      onPeerConnected: (peer) => {
-        handlePeerConnected(peer)
-        const connectedUsername = peer.username?.trim() || ''
-        if (connectedUsername) peerNamesRef.current.set(peer.id, connectedUsername)
-      },
-      onPeerDisconnected: (peerId) => {
-        handlePeerDisconnected(peerId)
-        peerNamesRef.current.delete(peerId)
-        peerPresenceStateRef.current.delete(peerId)
-      },
-      onRemoteAudioStream: handleRemoteStream,
-      onRemoteScreenStream: handleRemoteScreenStream,
-      onRemoteCameraStream: handleRemoteCameraStream,
-      onSignalingConnected: () => {
-        setIsSignalingConnected(true)
-        // Re-register push subscription on every reconnect so the server
-        // always has our subscription (survives server restarts).
-        registerPush(manager)
-      },
-      onSignalingDisconnected: () => setIsSignalingConnected(false),
-      onFileTransferProgress: handleFileTransferProgress,
-      onFileReceived: (id, blob, meta) => handleFileReceived(id, blob, meta, setMessages),
-      onSyncRequested: (peerId) => handleSyncRequested(manager, peerId),
-      onSyncReceived: handleSyncReceived,
-      onChannelReceived: handleChannelReceived,
-      onVoiceStateChanged: handleVoiceStateChanged,
-      onPeerSpeaking: handlePeerSpeaking,
-      onPeerUserInfo: (peerId, username) => {
-        handlePeerUserInfo(peerId, username)
-        const trimmed = username.trim()
-        if (trimmed) {
-          peerNamesRef.current.set(peerId, trimmed)
-        }
-      },
-      onDataChannelReady: async (peerId) => {
-        await handleDataChannelReady(manager, peerId)
-        if (!roomKeyRef.current && !requestedRoomKeyPeerIdsRef.current.has(peerId)) {
-          const requested = manager.requestRoomKey(peerId)
-          if (requested) requestedRoomKeyPeerIdsRef.current.add(peerId)
-        }
-
-        const pendingJoinUsername = pendingJoinAnnouncementRef.current
-        if (pendingJoinUsername) {
-          const sent = await announcePresenceIntent(manager, 'join', pendingJoinUsername)
-          if (sent) pendingJoinAnnouncementRef.current = null
-        }
-
-        // Re-send our voice / screen-share / camera state so the
-        // reconnecting peer can see us in the voice channel.
-        const vs = voiceStateRef.current
-        if (vs.activeVoiceChannel) {
-          manager.sendVoiceStateToPeer(
-            peerId,
-            vs.activeVoiceChannel,
-            vs.isScreenSharing,
-            vs.isScreenSharing ? vs.activeVoiceChannel : null,
-            vs.isCameraOn,
-          )
-        }
-      },
-      onSyncHello: (peerId, hello) => handleSyncHello(manager, peerId, hello),
-      onHistoryRequested: (peerId, request) => handleHistoryRequested(manager, peerId, request),
-      onHistoryReceived: (_peerId, response) => { void handleHistoryReceived(response) },
-      onRoomKeyRequested: (peerId, requesterUsername) => {
-        const room = currentRoomRef.current
-        const key = roomKeyRef.current
-        if (!room || !key) return
-        const targetChannel = currentChannelRef.current?.type === 'text'
-          ? currentChannelRef.current
-          : channelsRef.current.find(channel => channel.type === 'text') ?? null
-        if (!targetChannel) return
-
-        const requestMessage: Message = {
-          id: `system-room-key-request-${room.id}-${peerId}`,
-          channelId: targetChannel.id,
-          userId: 'system',
-          username: 'Room Access',
-          content: `${requesterUsername} joined without the room key.`,
-          timestamp: Date.now(),
-          synced: true,
-          systemAction: 'authorize-room-key',
-          systemActionTargetPeerId: peerId,
-          systemActionTargetUsername: requesterUsername,
-          systemActionResolved: false,
-        }
-
-        void saveMessage(requestMessage)
-          .then(() => {
-            setMessages(prev => {
-              if (prev.some(message => message.id === requestMessage.id)) return prev
-              if (requestMessage.channelId !== currentChannelRef.current?.id) return prev
-              return [...prev, requestMessage].slice(-MAX_IN_MEMORY_MESSAGES)
-            })
-          })
-          .catch(error => console.error('Failed to save room-key request message:', error))
-      },
-      onRoomKeyShared: (peerId, roomKey, sharedByUsername) => {
-        const room = currentRoomRef.current
-        if (!room) return
-        roomKeyRef.current = roomKey
-        requestedRoomKeyPeerIdsRef.current.clear()
-
-        void saveRoomKey(room.id, roomKey)
-          .then(async () => {
-            const targetChannel = currentChannelRef.current?.type === 'text'
-              ? currentChannelRef.current
-              : channelsRef.current.find(channel => channel.type === 'text') ?? null
-
-            if (targetChannel) {
-              const channelMessages = await getMessagesByChannel(targetChannel.id)
-              const decryptedMessages = await Promise.all(channelMessages.map(async (message) => {
-                if (!message.content.includes(':')) return message
-                const plaintext = await decryptText(message.content, roomKey)
-                if (plaintext === null) return message
-                const decoded = { ...message, content: plaintext }
-                await saveMessage(decoded)
-                return decoded
-              }))
-              setMessages(decryptedMessages.slice(-MAX_IN_MEMORY_MESSAGES))
-
-              const notice: Message = {
-                id: `system-room-key-shared-${room.id}-${peerId}`,
-                channelId: targetChannel.id,
-                userId: 'system',
-                username: 'Room Access',
-                content: `${sharedByUsername} authorized you and shared the room key.`,
-                timestamp: Date.now(),
-                synced: true,
-              }
-
-              await saveMessage(notice)
-              setMessages(prev => {
-                if (prev.some(message => message.id === notice.id)) return prev
-                if (notice.channelId !== currentChannelRef.current?.id) return prev
-                return [...prev, notice].slice(-MAX_IN_MEMORY_MESSAGES)
-              })
-            }
-
-            await handleDataChannelReady(manager, peerId)
-          })
-          .catch(error => console.error('Failed to apply shared room key:', error))
-      },
-      onPresenceEvent: (peerId, event) => {
-        const username = event.username?.trim() || peerNamesRef.current.get(peerId)?.trim() || ''
-        if (!username) return
-
-        peerNamesRef.current.set(peerId, username)
-
-        const lastState = peerPresenceStateRef.current.get(peerId)
-        if (event.action === 'join') {
-          if (lastState === 'joined') return
-          peerPresenceStateRef.current.set(peerId, 'joined')
-          postSystemMessage(`${username} joined the room.`)
-          return
-        }
-
-        if (lastState === 'left') return
-        peerPresenceStateRef.current.set(peerId, 'left')
-        postSystemMessage(`${username} left the room.`)
-      },
-      onScreenShareStateChanged: (peerId, voiceChannelId) => {
-        handlePeerScreenShareStateChanged(peerId, voiceChannelId)
-        voice.handlePeerScreenShareStateChanged(peerId, voiceChannelId)
-        // Play stream-ended sound for viewers when a peer stops sharing
-        if (voiceChannelId === null) {
-          import('@/lib/voiceSounds').then(s => s.playStreamEndedSound())
-        }
-      },
-      onScreenWatchRequested: (peerId, watch) => {
-        manager.setScreenShareSubscription(peerId, watch)
-        // Play viewer join/leave sound for the streamer
-        if (voiceStateRef.current.isScreenSharing) {
-          if (watch) {
-            import('@/lib/voiceSounds').then(s => s.playViewerJoinSound())
-          } else {
-            import('@/lib/voiceSounds').then(s => s.playViewerLeaveSound())
-          }
-        }
-      },
-      onCameraStateChanged: (peerId, cameraOn) => {
-        handlePeerCameraStateChanged(peerId, cameraOn)
-      },
-      onReactionReceived: (_peerId, reaction) => {
-        applyReaction(reaction)
-      },
-      onPushRenew: async () => {
-        console.log('[push] Server requested subscription renewal')
-        import('@/lib/pushSubscription').then(async (m) => {
-           await m.unsubscribeFromPush()
-           registerPush(manager)
-        })
-      },
-      onSyncPoll: async (pollId, lastMessageId, _roomId) => {
-        // An offline client's service worker asked the signaling server for
-        // missed messages. We are the online peer chosen to answer.
-        // Gather messages from IDB, encrypt if needed, and respond.
-        try {
-          const chans = channelsRef.current
-          const key = roomKeyRef.current
-          const textChannels = chans.filter(c => c.type === 'text')
-          const perChannel = await Promise.all(textChannels.map(c => getMessagesByChannel(c.id)))
-          let allMsgs = perChannel.flat().sort((a, b) => a.id.localeCompare(b.id))
-          if (lastMessageId) {
-            allMsgs = allMsgs.filter(m => m.id > lastMessageId)
-          }
-          // Cap to 200 messages
-          allMsgs = allMsgs.slice(-200)
-          // Encrypt for transit if we have a room key
-          let wireMsgs = allMsgs
-          if (key) {
-            const { encryptText: enc } = await import('@/lib/crypto')
-            wireMsgs = await Promise.all(allMsgs.map(async m => ({
-              ...m,
-              content: await enc(m.content, key),
-            })))
-          }
-          manager.respondToSyncPoll(pollId, wireMsgs)
-          console.log(`[sync-poll] Responded with ${wireMsgs.length} messages for poll ${pollId}`)
-        } catch (err) {
-          console.error('[sync-poll] Failed to respond:', err)
-          manager.respondToSyncPoll(pollId, [])
-        }
-      },
-    })
-    setWebrtcManager(manager)
-  }, [
-    handleRemoteMessage, handlePeerConnected, handlePeerDisconnected,
-    handleRemoteStream, handleRemoteScreenStream, handleRemoteCameraStream, handleFileTransferProgress, handleFileReceived,
-    handleSyncRequested, handleSyncReceived, handleChannelReceived,
-    handleVoiceStateChanged, handlePeerSpeaking, handlePeerUserInfo,
-    handlePeerScreenShareStateChanged, handlePeerCameraStateChanged,
-    handleDataChannelReady, handleSyncHello,
-    handleHistoryRequested, handleHistoryReceived, setMessages,
-    channelsRef, currentChannelRef,
-    postSystemMessage,
-    announcePresenceIntent,
-    applyReaction,
-    voice.handlePeerScreenShareStateChanged,
-  ])
-
-  /** Subscribe to Web Push and register with the signaling server.
-   *  Called on room create/join AND on every signaling reconnect so the
-   *  server always has a fresh subscription (survives server restarts). */
-  const registerPush = useCallback(async (manager: WebRTCManager, existingSub?: PushSubscriptionJSON) => {
-    if (!('serviceWorker' in navigator) || !('PushManager' in window)) return
-    if (Notification.permission === 'denied') return
-
-    try {
-      const sub = existingSub ?? await subscribeToPush()
-      if (sub) manager.registerPushSubscription(sub)
-    } catch (e) {
-      console.warn('[push] Could not register push subscription:', e)
-    }
-  }, [])
-
-  const registerPushForCurrentRoom = useCallback(async (subscription?: PushSubscriptionJSON) => {
-    if (!webrtcManager) return
-    await registerPush(webrtcManager, subscription)
-  }, [webrtcManager, registerPush])
-
-  const resolveRoomUser = useCallback((roomId: string, usernameOverride?: string): User | null => {
-    const preferredUsername = usernameOverride?.trim()
-    if (preferredUsername) return setRoomUsername(roomId, preferredUsername)
-
-    const roomUser = getUserForRoom(roomId)
-    if (roomUser) return roomUser
-
-    const defaultUsername = getDefaultUsername()?.trim()
-    if (defaultUsername) return setRoomUsername(roomId, defaultUsername)
-
-    return null
-  }, [getDefaultUsername, getUserForRoom, setRoomUsername])
-
-  const createRoom = async (roomName: string, usernameOverride?: string, announceJoin = false): Promise<string> => {
-    const preferredUsername = usernameOverride?.trim() || getDefaultUsername()?.trim() || null
-    if (!preferredUsername) throw new Error('No user set')
-
-    const { room, channels: chs, defaultChannel, roomKey } = await createNewRoom(roomName)
-    const activeUser = resolveRoomUser(room.id, preferredUsername)
-    if (!activeUser) throw new Error('No user set')
-
-    roomKeyRef.current = roomKey
-    currentUserIdRef.current = activeUser.id
-    setCurrentRoom(room)
-    setChannels(chs)
-    setCurrentChannel(defaultChannel)
-    setMessages([])
-    setPeers([])
-    requestedRoomKeyPeerIdsRef.current.clear()
-    missingKeyNoticePendingRef.current = false
-    peerNamesRef.current.clear()
-    pendingJoinAnnouncementRef.current = null
-    localStorage.setItem('p2p-last-room', room.id)
-
-    try { webrtcManager?.disconnect() } catch (disconnectError) { console.debug('Disconnect before room creation failed:', disconnectError) }
-    const mgr = new WebRTCManager(activeUser.id, activeUser.username, room.id)
-    setupManager(mgr)
-    registerPush(mgr)
-    if (announceJoin) {
-      pendingJoinAnnouncementRef.current = activeUser.username
-      const sent = await announcePresenceIntent(mgr, 'join', activeUser.username)
-      if (sent) pendingJoinAnnouncementRef.current = null
-    }
-    return room.id
-  }
-
-  const joinRoom = async (roomCode: string, encryptionKey?: string, usernameOverride?: string, announceJoin = false) => {
-    const activeUser = resolveRoomUser(roomCode, usernameOverride)
-    if (!activeUser) throw new Error('No user set')
-
-    const key = encryptionKey ?? extractKeyFromFragment() ?? await getRoomKey(roomCode)
-    const joinedWithoutKey = !key
-
-    try { webrtcManager?.disconnect() } catch (disconnectError) { console.debug('Disconnect before room join failed:', disconnectError) }
-    const { room, channels: chs, channelToSelect, messages: msgs } = await loadRoomForJoin(roomCode)
-
-    if (key) {
-      await saveRoomKey(roomCode, key)
-    }
-    roomKeyRef.current = key
-    requestedRoomKeyPeerIdsRef.current.clear()
-    missingKeyNoticePendingRef.current = joinedWithoutKey
-    peerNamesRef.current.clear()
-    pendingJoinAnnouncementRef.current = null
-
-    currentUserIdRef.current = activeUser.id
-    setCurrentRoom(room)
-    setChannels(chs)
-    setCurrentChannel(channelToSelect)
-    setMessages(msgs.slice(-INITIAL_HISTORY_MESSAGES))
-    localStorage.setItem('p2p-last-room', roomCode)
-
-    const mgr = new WebRTCManager(activeUser.id, activeUser.username, roomCode)
-    setupManager(mgr)
-    registerPush(mgr)
-    if (announceJoin) {
-      pendingJoinAnnouncementRef.current = activeUser.username
-      const sent = await announcePresenceIntent(mgr, 'join', activeUser.username)
-      if (sent) pendingJoinAnnouncementRef.current = null
-    }
-  }
-
-  useEffect(() => {
-    if (!missingKeyNoticePendingRef.current) return
-    if (!currentRoom || !currentChannel || currentChannel.type !== 'text') return
-
-    const id = `system-missing-key-${currentRoom.id}`
-    const notice: Message = {
-      id,
-      channelId: currentChannel.id,
-      userId: 'system',
-      username: 'Security Notice',
-      content: 'You joined without an encryption key. Messages may appear encrypted. Would you like to share it? Ask a room member to share the full invite link (includes #ek=...).',
-      timestamp: Date.now(),
-      synced: true,
-    }
-
-    missingKeyNoticePendingRef.current = false
-
-    void saveMessage(notice)
-      .then(() => {
-        setMessages(prev => {
-          if (prev.some(m => m.id === notice.id)) return prev
-          if (notice.channelId !== currentChannelRef.current?.id) return prev
-          return [...prev, notice].slice(-MAX_IN_MEMORY_MESSAGES)
-        })
-      })
-      .catch((error) => {
-        console.error('Failed to save missing-key notice:', error)
-      })
-  }, [currentRoom, currentChannel, setMessages, currentChannelRef])
-
-  const leaveRoom = async (autoSwitchToOtherRoom = true, announceLeave = false) => {
-    const leavingRoomId = currentRoomRef.current?.id
-    const leavingUsername = currentUserRef.current?.username
-
-    if (announceLeave) {
-      await announcePresenceIntent(webrtcManager, 'leave', leavingUsername)
-    }
-
-    localStorage.removeItem('p2p-last-room')
-    try { webrtcManager?.disconnect() } catch (e) { console.warn('Disconnect error (ignored):', e) }
-    setWebrtcManager(null)
-    setCurrentRoom(null)
-    setChannels([])
-    setCurrentChannel(null)
-    setMessages([])
-    setPeers([])
-    voice.cleanupVoice()
-    roomKeyRef.current = null
-    requestedRoomKeyPeerIdsRef.current.clear()
-    peerPresenceStateRef.current.clear()
-    peerNamesRef.current.clear()
-    pendingJoinAnnouncementRef.current = null
-
-    // Remove the room from local IndexedDB history
-    if (leavingRoomId) {
-      await deleteRoomHistory(leavingRoomId)
-      await deleteRoomKey(leavingRoomId)
-    }
-
-    if (autoSwitchToOtherRoom && leavingRoomId) {
-      const allHistory = await getAllRoomHistory()
-      if (allHistory.length > 0) {
-        const sorted = allHistory.sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
-        try { await joinRoom(sorted[0].roomId) } catch (e) { console.error('Failed to auto-switch:', e) }
-      }
-    }
-  }
-
-  // Auto-join last room
-  useEffect(() => {
-    if (!currentUser || currentRoom || autoJoinAttempted.current) return
-    const lastRoomId = localStorage.getItem('p2p-last-room')
-    if (lastRoomId) {
-      autoJoinAttempted.current = true
-      joinRoom(lastRoomId).catch(e => console.error('Failed to auto-join:', e))
-    }
-  }, [currentUser, currentRoom])
-
-  const sendMessage = async (content: string) => {
-    if (!currentUser || !currentChannel || currentChannel.type !== 'text') return
-    const message: Message = {
-      id: generateMessageId(), channelId: currentChannel.id,
-      userId: currentUser.id, username: currentUser.username,
-      content, timestamp: Date.now(), synced: false,
-    }
-    // Save plaintext locally
-    await saveMessage(message)
-    setMessages(prev => [...prev, message].slice(-MAX_IN_MEMORY_MESSAGES))
-
-    // Encrypt content for transmission if we have a room key
-    const key = roomKeyRef.current
-    let wireMessage = message
-    if (key) {
-      const encrypted = await encryptText(content, key)
-      wireMessage = { ...message, content: encrypted }
-    }
-
-    webrtcManager?.sendMessage(wireMessage)
-
-    // Push the full message to offline peers via the signaling server.
-    // Always send — the sender's local notification pref is irrelevant for
-    // receivers who may have push enabled.
-    {
-      const preview = message.fileMetadata ? `📎 ${message.fileMetadata.name}` : content
-      // Truncate preview to keep the push payload under the 4 KB Web Push limit
-      const truncatedPreview = preview.length > 200 ? preview.slice(0, 197) + '…' : preview
-      const encryptedPreview = key ? await encryptText(truncatedPreview, key) : truncatedPreview
-      // Strip large fields (fileMetadata) from the push message to stay under 4KB
-      const pushMessage = { ...wireMessage }
-      delete pushMessage.fileMetadata
-      const pushPayload = JSON.stringify({
-        title: currentUser.username,
-        body: encryptedPreview,
-        roomId: currentRoom?.id,
-        encrypted: !!key,
-        message: pushMessage,  // encrypted message object — SW decrypts before saving
-      })
-      // Pass our own endpoint so the server can skip sending to us
-      getPushEndpoint().then(endpoint => {
-        webrtcManager?.pushToOfflinePeers(pushPayload, endpoint ?? undefined)
-      })
-    }
-  }
-
-  const toggleReaction = async (messageId: string, emoji: string) => {
-    if (!currentUser) return
-    const msg = messages.find(m => m.id === messageId)
-    if (!msg) return
-    const existing = msg.reactions?.[emoji]?.find(r => r.userId === currentUser.id)
-    const action: 'add' | 'remove' = existing ? 'remove' : 'add'
-    const reaction: ReactionEvent = {
-      messageId, emoji,
-      userId: currentUser.id,
-      username: currentUser.username,
-      action,
-    }
-    applyReaction(reaction)
-    webrtcManager?.sendReaction(reaction)
-  }
-
-  const sendGifMessage = async (gifUrl: string, searchQuery: string) => {
-    if (!currentUser || !currentChannel || currentChannel.type !== 'text') return
-    const message: Message = {
-      id: generateMessageId(), channelId: currentChannel.id,
-      userId: currentUser.id, username: currentUser.username,
-      content: searchQuery, timestamp: Date.now(), synced: false,
-      gifUrl,
-    }
-    await saveMessage(message)
-    setMessages(prev => [...prev, message].slice(-MAX_IN_MEMORY_MESSAGES))
-
-    const key = roomKeyRef.current
-    let wireMessage = message
-    if (key) {
-      const encrypted = await encryptText(searchQuery, key)
-      wireMessage = { ...message, content: encrypted }
-    }
-
-    webrtcManager?.sendMessage(wireMessage)
-
-    {
-      const preview = `🎬 GIF: ${searchQuery}`
-      const encryptedPreview = key ? await encryptText(preview, key) : preview
-      const pushPayload = JSON.stringify({
-        title: currentUser.username,
-        body: encryptedPreview,
-        roomId: currentRoom?.id,
-        encrypted: !!key,
-        message: wireMessage,
-      })
-      getPushEndpoint().then(endpoint => {
-        webrtcManager?.pushToOfflinePeers(pushPayload, endpoint ?? undefined)
-      })
-    }
-  }
-
-  const authorizePeerAccess = async (messageId: string, peerId: string) => {
-    const roomKey = roomKeyRef.current
-    if (!webrtcManager || !roomKey) return
-
-    const shared = webrtcManager.shareRoomKey(peerId, roomKey)
-    if (!shared) return
-
-    const authorizedBy = currentUserRef.current?.username ?? 'A room member'
-    const original = messages.find(message => message.id === messageId)
-    if (!original) return
-
-    const updated: Message = {
-      ...original,
-      content: `${original.systemActionTargetUsername ?? 'This user'} was authorized by ${authorizedBy}.`,
-      systemActionResolved: true,
-      systemActionResolvedBy: authorizedBy,
-      timestamp: Date.now(),
-    }
-
-    await saveMessage(updated)
-    setMessages(prev => prev.map(message => message.id === messageId ? updated : message))
-  }
-
-  // Cleanup on unmount
-  const webrtcManagerRef = useRef(webrtcManager)
-  webrtcManagerRef.current = webrtcManager
-  useEffect(() => () => { webrtcManagerRef.current?.disconnect(); voice.cleanupVoice() }, [])
-
-  // ── Listen for messages delivered by the service worker via push ───
-  // When the SW receives a push and saves the message to IndexedDB, it posts
-  // a message to all open client windows so they can refresh the view.
-  // Also handles background-poll-complete from periodic polling.
-  useEffect(() => {
-    if (!('serviceWorker' in navigator)) return
-
-    const handler = (event: MessageEvent) => {
-      if (event.data?.type === 'push-message-received' && event.data.message) {
-        const msg = event.data.message as Message
-        setMessages(prev => {
-          if (prev.some(m => m.id === msg.id)) return prev
-          if (msg.channelId === currentChannelRef.current?.id) {
-            return [...prev, msg].slice(-MAX_IN_MEMORY_MESSAGES)
-          }
-          return prev
-        })
-      }
-      // SW finished a background poll and saved new messages to IDB
-      if (event.data?.type === 'background-poll-complete' && event.data.newMessages > 0) {
-        const chanId = currentChannelRef.current?.id
-        if (chanId) {
-          getMessagesByChannel(chanId).then(msgs => setMessages(msgs.slice(-MAX_IN_MEMORY_MESSAGES)))
-        }
-      }
-    }
-
-    navigator.serviceWorker.addEventListener('message', handler)
-    return () => navigator.serviceWorker.removeEventListener('message', handler)
-  }, [setMessages, currentChannelRef])
-
-  // ── Visibility-based P2P resync ────────────────────────────────────
-  // When the user switches back to the tab (or opens the PWA), reload
-  // messages from IndexedDB (which may have been written by the SW from
-  // push or background poll), trigger an immediate SW poll for any
-  // remaining gaps, and the existing P2P sync will fill the rest.
-  useEffect(() => {
-    const handleVisibility = () => {
-      if (document.visibilityState === 'visible') {
-        const chanId = currentChannelRef.current?.id
-        if (chanId) {
-          getMessagesByChannel(chanId).then(msgs => setMessages(msgs.slice(-MAX_IN_MEMORY_MESSAGES)))
-        }
-
-        // Ask the SW to do an immediate poll for missed messages
-        if ('serviceWorker' in navigator) {
-          if (navigator.serviceWorker.controller) {
-            navigator.serviceWorker.controller.postMessage({ type: 'poll-now' })
-          } else {
-            navigator.serviceWorker.getRegistration().then((registration) => {
-              registration?.active?.postMessage({ type: 'poll-now' })
-              registration?.waiting?.postMessage({ type: 'poll-now' })
-            }).catch(() => {
-              // no-op: best effort
-            })
-          }
-        }
-
-        // If we have a WebRTC manager, trigger P2P re-sync with all
-        // connected peers (in case the data channel is still open but
-        // we missed messages while the tab was hidden).
-        const mgr = webrtcManagerRef.current
-        if (mgr) {
-          const peers = mgr.getPeers()
-          for (const peer of peers) {
-            if (peer.dataChannel?.readyState === 'open') {
-              handleDataChannelReady(mgr, peer.id)
-            }
-          }
-        }
-      }
-    }
-
-    document.addEventListener('visibilitychange', handleVisibility)
-    return () => document.removeEventListener('visibilitychange', handleVisibility)
-  }, [setMessages, currentChannelRef, handleDataChannelReady])
-
-  return (
-    <P2PContext.Provider value={{
-      currentUser, currentRoom, channels, currentChannel, messages, peers,
-      activeVoiceChannel: voice.activeVoiceChannel,
-      isMuted: voice.isMuted, isDeafened: voice.isDeafened,
-      isScreenSharing: voice.isScreenSharing,
-      isCameraOn: voice.isCameraOn,
-      localScreenShareStream: voice.screenShareStream,
-      localCameraStream: voice.localCameraStream,
-      watchedScreenShares: voice.watchedScreenShares,
-      localStream: voice.localStream,
-      remoteStreams,
-      remoteScreenStreams,
-      remoteCameraStreams,
-      isSignalingConnected, hasRoomKey: !!roomKeyRef.current, fileTransfers, speakingUsers,
-      setUsername, createRoom, joinRoom, leaveRoom,
-      createChannel: (name, type) => createChannelAction(name, type, currentRoom?.id ?? null, webrtcManager),
-      selectChannel: (id) => selectChannelAction(id, currentRoom?.id, currentRoom?.name),
-      sendMessage,
-      sendGifMessage,
-      toggleReaction,
-      authorizePeerAccess,
-      loadOlderMessages: async () => {
-        if (!webrtcManager || !currentChannel || currentChannel.type !== 'text') return 0
-        const beforeMessageId = messages.length > 0 ? messages[0].id : null
-        return requestOlderMessages(webrtcManager, currentChannel.id, beforeMessageId)
-      },
-      sendFile: (file) => sendFileAction(file, currentUser?.id ?? '', currentUser?.username ?? '', currentChannel?.id ?? '', currentChannel?.type ?? '', webrtcManager, setMessages),
-      registerPushForCurrentRoom,
-      joinVoiceChannel: voice.joinVoiceChannel,
-      leaveVoiceChannel: voice.leaveVoiceChannel,
-      toggleMute: voice.toggleMute, toggleDeafen: voice.toggleDeafen,
-      startScreenShare: voice.startScreenShare, stopScreenShare: voice.stopScreenShare,
-      startCamera: voice.startCamera, stopCamera: voice.stopCamera,
-      watchScreenShare: voice.watchScreenShare,
-      stopWatchingScreenShare: voice.stopWatchingScreenShare,
-    }}>
-      {children}
-    </P2PContext.Provider>
-  )
+// ── Props passed from the wrapper to the class ──
+
+interface P2PProviderProps
+{
+	children: ReactNode
+	user: ReturnType<typeof useUser>
+	currentRoom: Room | null
+	setCurrentRoom: Dispatch<SetStateAction<Room | null>>
+	webrtcManager: WebRTCManager | null
+	setWebrtcManager: Dispatch<SetStateAction<WebRTCManager | null>>
+	isSignalingConnected: boolean
+	setIsSignalingConnected: Dispatch<SetStateAction<boolean>>
+	currentRoomRef: MutableRefObject<Room | null>
+	currentUserRef: MutableRefObject<User | null>
+	currentUserIdRef: MutableRefObject<string | null>
+	roomKeyRef: MutableRefObject<string | null>
+	channelState: ReturnType<typeof useChannels>
+	peerState: ReturnType<typeof usePeers>
+	voice: ReturnType<typeof useVoice>
+	fileTransfer: ReturnType<typeof useFileTransfer>
+	sync: ReturnType<typeof useSync>
+}
+
+// ── Thin wrapper: calls hooks, renders the class ──
+
+export function P2PProviderBridge({ children }: { children: ReactNode })
+{
+	const user = useUser()
+	const [currentRoom, setCurrentRoom] = useState<Room | null>(null)
+	const [webrtcManager, setWebrtcManager] = useState<WebRTCManager | null>(null)
+	const [isSignalingConnected, setIsSignalingConnected] = useState(false)
+
+	const currentRoomRef = useRef(currentRoom)
+	const currentUserRef = useRef(user.currentUser)
+	const currentUserIdRef = useRef<string | null>(user.currentUser?.id ?? null)
+	const roomKeyRef = useRef<string | null>(null)
+	currentRoomRef.current = currentRoom
+	currentUserRef.current = user.currentUser
+	currentUserIdRef.current = user.currentUser?.id ?? null
+
+	const channelState = useChannels()
+	const peerState = usePeers()
+	const voice = useVoice({ currentUserRef, webrtcManager, setSpeakingUsers: peerState.setSpeakingUsers })
+	const fileTransfer = useFileTransfer({ currentChannelRef: channelState.currentChannelRef })
+	const sync = useSync({
+		currentRoomRef, channelsRef: channelState.channelsRef,
+		currentChannelRef: channelState.currentChannelRef,
+		currentUserIdRef, roomKeyRef,
+		setCurrentRoom, setChannels: channelState.setChannels,
+		setCurrentChannel: channelState.setCurrentChannel,
+		setMessages: channelState.setMessages,
+	})
+
+	return (
+		<P2PProvider
+			user={user}
+			currentRoom={currentRoom} setCurrentRoom={setCurrentRoom}
+			webrtcManager={webrtcManager} setWebrtcManager={setWebrtcManager}
+			isSignalingConnected={isSignalingConnected} setIsSignalingConnected={setIsSignalingConnected}
+			currentRoomRef={currentRoomRef} currentUserRef={currentUserRef}
+			currentUserIdRef={currentUserIdRef} roomKeyRef={roomKeyRef}
+			channelState={channelState} peerState={peerState}
+			voice={voice} fileTransfer={fileTransfer} sync={sync}
+		>
+			{children}
+		</P2PProvider>
+	)
+}
+
+// ── Class: all business logic ──
+
+export class P2PProvider extends Component<P2PProviderProps>
+{
+	// ── Instance properties (replacing useRef) ──
+
+	private autoJoinAttempted = false
+	private missingKeyNoticePending = false
+	private requestedRoomKeyPeerIds = new Set<string>()
+	private peerPresenceState = new Map<string, 'joined' | 'left'>()
+	private peerNames = new Map<string, string>()
+	private pendingJoinAnnouncement: string | null = null
+
+	// ── Props accessors: User ──
+
+	private get currentUser() { return this.componentProps.user.currentUser }
+	private get setUsername() { return this.componentProps.user.setUsername }
+	private get getDefaultUsername() { return this.componentProps.user.getDefaultUsername }
+	private get getUserForRoom() { return this.componentProps.user.getUserForRoom }
+	private get setRoomUsername() { return this.componentProps.user.setRoomUsername }
+
+	// ── Props accessors: Direct state ──
+
+	private get currentRoom() { return this.componentProps.currentRoom }
+	private get setCurrentRoom() { return this.componentProps.setCurrentRoom }
+	private get webrtcManager() { return this.componentProps.webrtcManager }
+	private get setWebrtcManager() { return this.componentProps.setWebrtcManager }
+	private get isSignalingConnected() { return this.componentProps.isSignalingConnected }
+	private get setIsSignalingConnected() { return this.componentProps.setIsSignalingConnected }
+
+	// ── Props accessors: Shared refs ──
+
+	private get currentRoomRef() { return this.componentProps.currentRoomRef }
+	private get currentUserRef() { return this.componentProps.currentUserRef }
+	private get currentUserIdRef() { return this.componentProps.currentUserIdRef }
+	private get roomKeyRef() { return this.componentProps.roomKeyRef }
+
+	// ── Props accessors: Channel state ──
+
+	private get channels() { return this.componentProps.channelState.channels }
+	private get setChannels() { return this.componentProps.channelState.setChannels }
+	private get currentChannel() { return this.componentProps.channelState.currentChannel }
+	private get setCurrentChannel() { return this.componentProps.channelState.setCurrentChannel }
+	private get messages() { return this.componentProps.channelState.messages }
+	private get setMessages() { return this.componentProps.channelState.setMessages }
+	private get channelsRef() { return this.componentProps.channelState.channelsRef }
+	private get currentChannelRef() { return this.componentProps.channelState.currentChannelRef }
+	private get createChannelAction() { return this.componentProps.channelState.createChannel }
+	private get selectChannelAction() { return this.componentProps.channelState.selectChannel }
+	private get handleChannelReceived() { return this.componentProps.channelState.handleChannelReceived }
+
+	// ── Props accessors: Peer state ──
+
+	private get peers() { return this.componentProps.peerState.peers }
+	private get setPeers() { return this.componentProps.peerState.setPeers }
+	private get remoteStreams() { return this.componentProps.peerState.remoteStreams }
+	private get remoteScreenStreams() { return this.componentProps.peerState.remoteScreenStreams }
+	private get remoteCameraStreams() { return this.componentProps.peerState.remoteCameraStreams }
+	private get speakingUsers() { return this.componentProps.peerState.speakingUsers }
+	private get handlePeerConnected() { return this.componentProps.peerState.handlePeerConnected }
+	private get handlePeerDisconnected() { return this.componentProps.peerState.handlePeerDisconnected }
+	private get handleRemoteStream() { return this.componentProps.peerState.handleRemoteStream }
+	private get handleRemoteScreenStream() { return this.componentProps.peerState.handleRemoteScreenStream }
+	private get handleRemoteCameraStream() { return this.componentProps.peerState.handleRemoteCameraStream }
+	private get handleVoiceStateChanged() { return this.componentProps.peerState.handleVoiceStateChanged }
+	private get handlePeerSpeaking() { return this.componentProps.peerState.handlePeerSpeaking }
+	private get handlePeerUserInfo() { return this.componentProps.peerState.handlePeerUserInfo }
+	private get handlePeerScreenShareStateChanged() { return this.componentProps.peerState.handlePeerScreenShareStateChanged }
+	private get handlePeerCameraStateChanged() { return this.componentProps.peerState.handlePeerCameraStateChanged }
+
+	// ── Props accessors: Voice ──
+
+	private get voice() { return this.componentProps.voice }
+
+	// ── Props accessors: File transfer ──
+
+	private get fileTransfers() { return this.componentProps.fileTransfer.fileTransfers }
+	private get handleFileTransferProgress() { return this.componentProps.fileTransfer.handleFileTransferProgress }
+	private get handleFileReceived() { return this.componentProps.fileTransfer.handleFileReceived }
+	private get sendFileAction() { return this.componentProps.fileTransfer.sendFile }
+
+	// ── Props accessors: Sync ──
+
+	private get handleSyncRequested() { return this.componentProps.sync.handleSyncRequested }
+	private get handleDataChannelReady() { return this.componentProps.sync.handleDataChannelReady }
+	private get handleSyncHello() { return this.componentProps.sync.handleSyncHello }
+	private get handleSyncReceived() { return this.componentProps.sync.handleSyncReceived }
+	private get handleRemoteMessage() { return this.componentProps.sync.handleRemoteMessage }
+	private get handleHistoryRequested() { return this.componentProps.sync.handleHistoryRequested }
+	private get handleHistoryReceived() { return this.componentProps.sync.handleHistoryReceived }
+	private get requestOlderMessages() { return this.componentProps.sync.requestOlderMessages }
+
+	// ── Computed properties ──
+
+	private get voiceState()
+	{
+		return {
+			activeVoiceChannel: this.voice.activeVoiceChannel,
+			isScreenSharing: this.voice.isScreenSharing,
+			isCameraOn: this.voice.isCameraOn,
+		}
+	}
+
+	// ── Lifecycle ──
+
+	componentDidMount()
+	{
+		this.checkAutoJoin()
+		this.checkMissingKeyNotice()
+
+		if ('serviceWorker' in navigator)
+		{
+			navigator.serviceWorker.addEventListener('message', this.handleSWMessage)
+		}
+		document.addEventListener('visibilitychange', this.handleVisibility)
+	}
+
+	componentDidUpdate(prevProps: P2PProviderProps)
+	{
+		// Keep room.channels in sync with channels state
+		if (this.componentProps.channelState.channels !== prevProps.channelState.channels ||
+			this.componentProps.currentRoom !== prevProps.currentRoom)
+		{
+			if (this.componentProps.currentRoom)
+			{
+				saveRoom({ ...this.componentProps.currentRoom, channels: this.componentProps.channelState.channels })
+			}
+		}
+
+		// Missing key notice
+		this.checkMissingKeyNotice()
+
+		// Auto-join check
+		if (this.componentProps.user.currentUser !== prevProps.user.currentUser ||
+			this.componentProps.currentRoom !== prevProps.currentRoom)
+		{
+			this.checkAutoJoin()
+		}
+	}
+
+	componentWillUnmount()
+	{
+		this.webrtcManager?.disconnect()
+		this.voice.cleanupVoice()
+
+		if ('serviceWorker' in navigator)
+		{
+			navigator.serviceWorker.removeEventListener('message', this.handleSWMessage)
+		}
+		document.removeEventListener('visibilitychange', this.handleVisibility)
+	}
+
+	// ── Effect logic ──
+
+	private checkAutoJoin = () =>
+	{
+		if (!this.currentUser || this.currentRoom || this.autoJoinAttempted) return
+		const lastRoomId = localStorage.getItem('p2p-last-room')
+		if (lastRoomId)
+		{
+			this.autoJoinAttempted = true
+			this.joinRoom(lastRoomId).catch(e => console.error('Failed to auto-join:', e))
+		}
+	}
+
+	private checkMissingKeyNotice = () =>
+	{
+		if (!this.missingKeyNoticePending) return
+		if (!this.currentRoom || !this.currentChannel || this.currentChannel.type !== 'text') return
+
+		const id = `system-missing-key-${this.currentRoom.id}`
+		const notice: Message = {
+			id,
+			channelId: this.currentChannel.id,
+			userId: 'system',
+			username: 'Security Notice',
+			content: 'You joined without an encryption key. Messages may appear encrypted. Would you like to share it? Ask a room member to share the full invite link (includes #ek=...).',
+			timestamp: Date.now(),
+			synced: true,
+		}
+
+		this.missingKeyNoticePending = false
+
+		void saveMessage(notice)
+			.then(() =>
+			{
+				this.setMessages(prev =>
+				{
+					if (prev.some(m => m.id === notice.id)) return prev
+					if (notice.channelId !== this.currentChannelRef.current?.id) return prev
+					return [...prev, notice].slice(-MAX_IN_MEMORY_MESSAGES)
+				})
+			})
+			.catch((error) =>
+			{
+				console.error('Failed to save missing-key notice:', error)
+			})
+	}
+
+	private handleSWMessage = (event: MessageEvent) =>
+	{
+		if (event.data?.type === 'push-message-received' && event.data.message)
+		{
+			const msg = event.data.message as Message
+			this.setMessages(prev =>
+			{
+				if (prev.some(m => m.id === msg.id)) return prev
+				if (msg.channelId === this.currentChannelRef.current?.id)
+				{
+					return [...prev, msg].slice(-MAX_IN_MEMORY_MESSAGES)
+				}
+				return prev
+			})
+		}
+		if (event.data?.type === 'background-poll-complete' && event.data.newMessages > 0)
+		{
+			const chanId = this.currentChannelRef.current?.id
+			if (chanId)
+			{
+				getMessagesByChannel(chanId).then(msgs => this.setMessages(msgs.slice(-MAX_IN_MEMORY_MESSAGES)))
+			}
+		}
+	}
+
+	private handleVisibility = () =>
+	{
+		if (document.visibilityState === 'visible')
+		{
+			const chanId = this.currentChannelRef.current?.id
+			if (chanId)
+			{
+				getMessagesByChannel(chanId).then(msgs => this.setMessages(msgs.slice(-MAX_IN_MEMORY_MESSAGES)))
+			}
+
+			if ('serviceWorker' in navigator)
+			{
+				if (navigator.serviceWorker.controller)
+				{
+					navigator.serviceWorker.controller.postMessage({ type: 'poll-now' })
+				} else
+				{
+					navigator.serviceWorker.getRegistration().then((registration) =>
+					{
+						registration?.active?.postMessage({ type: 'poll-now' })
+						registration?.waiting?.postMessage({ type: 'poll-now' })
+					}).catch(() =>
+					{
+						// no-op: best effort
+					})
+				}
+			}
+
+			const mgr = this.webrtcManager
+			if (mgr)
+			{
+				const peers = mgr.getPeers()
+				for (const peer of peers)
+				{
+					if (peer.dataChannel?.readyState === 'open')
+					{
+						this.handleDataChannelReady(mgr, peer.id)
+					}
+				}
+			}
+		}
+	}
+
+	// ── Business methods ──
+
+	private postSystemMessage = (content: string) =>
+	{
+		const room = this.currentRoomRef.current
+		if (!room) return
+
+		const targetChannel = this.currentChannelRef.current?.type === 'text'
+			? this.currentChannelRef.current
+			: this.channelsRef.current.find(channel => channel.type === 'text') ?? null
+		if (!targetChannel) return
+
+		const notice: Message = {
+			id: `system-${generateMessageId()}`,
+			channelId: targetChannel.id,
+			userId: 'system',
+			username: 'Room Access',
+			content,
+			timestamp: Date.now(),
+			synced: true,
+		}
+
+		void saveMessage(notice)
+			.then(() =>
+			{
+				this.setMessages(prev =>
+				{
+					if (prev.some(message => message.id === notice.id)) return prev
+					if (notice.channelId !== this.currentChannelRef.current?.id) return prev
+					return [...prev, notice].slice(-MAX_IN_MEMORY_MESSAGES)
+				})
+			})
+			.catch(error => console.error('Failed to save system message:', error))
+	}
+
+	private announcePresenceIntent = async (
+		manager: WebRTCManager | null,
+		action: 'join' | 'leave',
+		username?: string
+	): Promise<boolean> =>
+	{
+		const trimmed = username?.trim() || ''
+		if (!manager || !trimmed) return false
+		const sent = manager.broadcastPresenceEvent(action, trimmed)
+		if (!sent) return false
+		await new Promise(resolve => setTimeout(resolve, 100))
+		return true
+	}
+
+	private applyReaction = (reaction: ReactionEvent) =>
+	{
+		this.setMessages(prev => prev.map(msg =>
+		{
+			if (msg.id !== reaction.messageId) return msg
+			const reactions = { ...(msg.reactions ?? {}) }
+			const list = [...(reactions[reaction.emoji] ?? [])]
+			if (reaction.action === 'add')
+			{
+				if (!list.some(r => r.userId === reaction.userId))
+				{
+					list.push({ userId: reaction.userId, username: reaction.username })
+				}
+			} else
+			{
+				const idx = list.findIndex(r => r.userId === reaction.userId)
+				if (idx !== -1) list.splice(idx, 1)
+			}
+			if (list.length > 0)
+			{
+				reactions[reaction.emoji] = list
+			} else
+			{
+				delete reactions[reaction.emoji]
+			}
+			const updated = { ...msg, reactions: Object.keys(reactions).length > 0 ? reactions : undefined }
+			void saveMessage(updated)
+			return updated
+		}))
+	}
+
+	private setupManager = (manager: WebRTCManager) =>
+	{
+		manager.setCallbacks({
+			onMessageReceived: (msg) => this.handleRemoteMessage(msg),
+			onPeerConnected: (peer) =>
+			{
+				this.handlePeerConnected(peer)
+				const connectedUsername = peer.username?.trim() || ''
+				if (connectedUsername) this.peerNames.set(peer.id, connectedUsername)
+			},
+			onPeerDisconnected: (peerId) =>
+			{
+				this.handlePeerDisconnected(peerId)
+				this.peerNames.delete(peerId)
+				this.peerPresenceState.delete(peerId)
+			},
+			onRemoteAudioStream: (peerId, stream) => this.handleRemoteStream(peerId, stream),
+			onRemoteScreenStream: (peerId, stream) => this.handleRemoteScreenStream(peerId, stream),
+			onRemoteCameraStream: (peerId, stream) => this.handleRemoteCameraStream(peerId, stream),
+			onSignalingConnected: () =>
+			{
+				this.setIsSignalingConnected(true)
+				this.registerPush(manager)
+			},
+			onSignalingDisconnected: () => this.setIsSignalingConnected(false),
+			onFileTransferProgress: (id, progress) => this.handleFileTransferProgress(id, progress),
+			onFileReceived: (id, blob, meta) => this.handleFileReceived(id, blob, meta, this.setMessages),
+			onSyncRequested: (peerId) => this.handleSyncRequested(manager, peerId),
+			onSyncReceived: (payload) => this.handleSyncReceived(payload),
+			onChannelReceived: (channel) => this.handleChannelReceived(channel),
+			onVoiceStateChanged: (peerId, channelId) => this.handleVoiceStateChanged(peerId, channelId),
+			onPeerSpeaking: (peerId, speaking) => this.handlePeerSpeaking(peerId, speaking),
+			onPeerUserInfo: (peerId, username) =>
+			{
+				this.handlePeerUserInfo(peerId, username)
+				const trimmed = username.trim()
+				if (trimmed)
+				{
+					this.peerNames.set(peerId, trimmed)
+				}
+			},
+			onDataChannelReady: async (peerId) =>
+			{
+				await this.handleDataChannelReady(manager, peerId)
+				if (!this.roomKeyRef.current && !this.requestedRoomKeyPeerIds.has(peerId))
+				{
+					const requested = manager.requestRoomKey(peerId)
+					if (requested) this.requestedRoomKeyPeerIds.add(peerId)
+				}
+
+				const pendingJoinUsername = this.pendingJoinAnnouncement
+				if (pendingJoinUsername)
+				{
+					const sent = await this.announcePresenceIntent(manager, 'join', pendingJoinUsername)
+					if (sent) this.pendingJoinAnnouncement = null
+				}
+
+				const vs = this.voiceState
+				if (vs.activeVoiceChannel)
+				{
+					manager.sendVoiceStateToPeer(
+						peerId,
+						vs.activeVoiceChannel,
+						vs.isScreenSharing,
+						vs.isScreenSharing ? vs.activeVoiceChannel : null,
+						vs.isCameraOn,
+					)
+				}
+			},
+			onSyncHello: (peerId, hello) => this.handleSyncHello(manager, peerId, hello),
+			onHistoryRequested: (peerId, request) => this.handleHistoryRequested(manager, peerId, request),
+			onHistoryReceived: (_peerId, response) => { void this.handleHistoryReceived(response) },
+			onRoomKeyRequested: (peerId, requesterUsername) =>
+			{
+				const room = this.currentRoomRef.current
+				const key = this.roomKeyRef.current
+				if (!room || !key) return
+				const targetChannel = this.currentChannelRef.current?.type === 'text'
+					? this.currentChannelRef.current
+					: this.channelsRef.current.find(channel => channel.type === 'text') ?? null
+				if (!targetChannel) return
+
+				const requestMessage: Message = {
+					id: `system-room-key-request-${room.id}-${peerId}`,
+					channelId: targetChannel.id,
+					userId: 'system',
+					username: 'Room Access',
+					content: `${requesterUsername} joined without the room key.`,
+					timestamp: Date.now(),
+					synced: true,
+					systemAction: 'authorize-room-key',
+					systemActionTargetPeerId: peerId,
+					systemActionTargetUsername: requesterUsername,
+					systemActionResolved: false,
+				}
+
+				void saveMessage(requestMessage)
+					.then(() =>
+					{
+						this.setMessages(prev =>
+						{
+							if (prev.some(message => message.id === requestMessage.id)) return prev
+							if (requestMessage.channelId !== this.currentChannelRef.current?.id) return prev
+							return [...prev, requestMessage].slice(-MAX_IN_MEMORY_MESSAGES)
+						})
+					})
+					.catch(error => console.error('Failed to save room-key request message:', error))
+			},
+			onRoomKeyShared: (peerId, roomKey, sharedByUsername) =>
+			{
+				const room = this.currentRoomRef.current
+				if (!room) return
+				this.roomKeyRef.current = roomKey
+				this.requestedRoomKeyPeerIds.clear()
+
+				void saveRoomKey(room.id, roomKey)
+					.then(async () =>
+					{
+						const targetChannel = this.currentChannelRef.current?.type === 'text'
+							? this.currentChannelRef.current
+							: this.channelsRef.current.find(channel => channel.type === 'text') ?? null
+
+						if (targetChannel)
+						{
+							const channelMessages = await getMessagesByChannel(targetChannel.id)
+							const decryptedMessages = await Promise.all(channelMessages.map(async (message) =>
+							{
+								if (!message.content.includes(':')) return message
+								const plaintext = await decryptText(message.content, roomKey)
+								if (plaintext === null) return message
+								const decoded = { ...message, content: plaintext }
+								await saveMessage(decoded)
+								return decoded
+							}))
+							this.setMessages(decryptedMessages.slice(-MAX_IN_MEMORY_MESSAGES))
+
+							const notice: Message = {
+								id: `system-room-key-shared-${room.id}-${peerId}`,
+								channelId: targetChannel.id,
+								userId: 'system',
+								username: 'Room Access',
+								content: `${sharedByUsername} authorized you and shared the room key.`,
+								timestamp: Date.now(),
+								synced: true,
+							}
+
+							await saveMessage(notice)
+							this.setMessages(prev =>
+							{
+								if (prev.some(message => message.id === notice.id)) return prev
+								if (notice.channelId !== this.currentChannelRef.current?.id) return prev
+								return [...prev, notice].slice(-MAX_IN_MEMORY_MESSAGES)
+							})
+						}
+
+						await this.handleDataChannelReady(manager, peerId)
+					})
+					.catch(error => console.error('Failed to apply shared room key:', error))
+			},
+			onPresenceEvent: (peerId, event) =>
+			{
+				const username = event.username?.trim() || this.peerNames.get(peerId)?.trim() || ''
+				if (!username) return
+
+				this.peerNames.set(peerId, username)
+
+				const lastState = this.peerPresenceState.get(peerId)
+				if (event.action === 'join')
+				{
+					if (lastState === 'joined') return
+					this.peerPresenceState.set(peerId, 'joined')
+					this.postSystemMessage(`${username} joined the room.`)
+					return
+				}
+
+				if (lastState === 'left') return
+				this.peerPresenceState.set(peerId, 'left')
+				this.postSystemMessage(`${username} left the room.`)
+			},
+			onScreenShareStateChanged: (peerId, voiceChannelId) =>
+			{
+				this.handlePeerScreenShareStateChanged(peerId, voiceChannelId)
+				this.voice.handlePeerScreenShareStateChanged(peerId, voiceChannelId)
+				if (voiceChannelId === null)
+				{
+					import('@/lib/voiceSounds').then(s => s.playStreamEndedSound())
+				}
+			},
+			onScreenWatchRequested: (peerId, watch) =>
+			{
+				manager.setScreenShareSubscription(peerId, watch)
+				if (this.voiceState.isScreenSharing)
+				{
+					if (watch)
+					{
+						import('@/lib/voiceSounds').then(s => s.playViewerJoinSound())
+					} else
+					{
+						import('@/lib/voiceSounds').then(s => s.playViewerLeaveSound())
+					}
+				}
+			},
+			onCameraStateChanged: (peerId, cameraOn) =>
+			{
+				this.handlePeerCameraStateChanged(peerId, cameraOn)
+			},
+			onReactionReceived: (_peerId, reaction) =>
+			{
+				this.applyReaction(reaction)
+			},
+			onPushRenew: async () =>
+			{
+				console.log('[push] Server requested subscription renewal')
+				import('@/lib/pushSubscription').then(async (m) =>
+				{
+					await m.unsubscribeFromPush()
+					this.registerPush(manager)
+				})
+			},
+			onSyncPoll: async (pollId, lastMessageId, _roomId) =>
+			{
+				try
+				{
+					const chans = this.channelsRef.current
+					const key = this.roomKeyRef.current
+					const textChannels = chans.filter(c => c.type === 'text')
+					const perChannel = await Promise.all(textChannels.map(c => getMessagesByChannel(c.id)))
+					let allMsgs = perChannel.flat().sort((a, b) => a.id.localeCompare(b.id))
+					if (lastMessageId)
+					{
+						allMsgs = allMsgs.filter(m => m.id > lastMessageId)
+					}
+					allMsgs = allMsgs.slice(-200)
+					let wireMsgs = allMsgs
+					if (key)
+					{
+						const { encryptText: enc } = await import('@/lib/crypto')
+						wireMsgs = await Promise.all(allMsgs.map(async m => ({
+							...m,
+							content: await enc(m.content, key),
+						})))
+					}
+					manager.respondToSyncPoll(pollId, wireMsgs)
+					console.log(`[sync-poll] Responded with ${wireMsgs.length} messages for poll ${pollId}`)
+				} catch (err)
+				{
+					console.error('[sync-poll] Failed to respond:', err)
+					manager.respondToSyncPoll(pollId, [])
+				}
+			},
+		})
+		this.setWebrtcManager(manager)
+	}
+
+	private registerPush = async (manager: WebRTCManager, existingSub?: PushSubscriptionJSON) =>
+	{
+		if (!('serviceWorker' in navigator) || !('PushManager' in window)) return
+		if (Notification.permission === 'denied') return
+
+		try
+		{
+			const sub = existingSub ?? await subscribeToPush()
+			if (sub) manager.registerPushSubscription(sub)
+		} catch (e)
+		{
+			console.warn('[push] Could not register push subscription:', e)
+		}
+	}
+
+	private registerPushForCurrentRoom = async (subscription?: PushSubscriptionJSON) =>
+	{
+		if (!this.webrtcManager) return
+		await this.registerPush(this.webrtcManager, subscription)
+	}
+
+	private resolveRoomUser = (roomId: string, usernameOverride?: string): User | null =>
+	{
+		const preferredUsername = usernameOverride?.trim()
+		if (preferredUsername) return this.setRoomUsername(roomId, preferredUsername)
+
+		const roomUser = this.getUserForRoom(roomId)
+		if (roomUser) return roomUser
+
+		const defaultUsername = this.getDefaultUsername()?.trim()
+		if (defaultUsername) return this.setRoomUsername(roomId, defaultUsername)
+
+		return null
+	}
+
+	private createRoom = async (roomName: string, usernameOverride?: string, announceJoin = false): Promise<string> =>
+	{
+		const preferredUsername = usernameOverride?.trim() || this.getDefaultUsername()?.trim() || null
+		if (!preferredUsername) throw new Error('No user set')
+
+		const { room, channels: chs, defaultChannel, roomKey } = await createNewRoom(roomName)
+		const activeUser = this.resolveRoomUser(room.id, preferredUsername)
+		if (!activeUser) throw new Error('No user set')
+
+		this.roomKeyRef.current = roomKey
+		this.currentUserIdRef.current = activeUser.id
+		this.setCurrentRoom(room)
+		this.setChannels(chs)
+		this.setCurrentChannel(defaultChannel)
+		this.setMessages([])
+		this.setPeers([])
+		this.requestedRoomKeyPeerIds.clear()
+		this.missingKeyNoticePending = false
+		this.peerNames.clear()
+		this.pendingJoinAnnouncement = null
+		localStorage.setItem('p2p-last-room', room.id)
+
+		try { this.webrtcManager?.disconnect() } catch (disconnectError) { console.debug('Disconnect before room creation failed:', disconnectError) }
+		const mgr = new WebRTCManager(activeUser.id, activeUser.username, room.id)
+		this.setupManager(mgr)
+		this.registerPush(mgr)
+		if (announceJoin)
+		{
+			this.pendingJoinAnnouncement = activeUser.username
+			const sent = await this.announcePresenceIntent(mgr, 'join', activeUser.username)
+			if (sent) this.pendingJoinAnnouncement = null
+		}
+		return room.id
+	}
+
+	private joinRoom = async (roomCode: string, encryptionKey?: string, usernameOverride?: string, announceJoin = false) =>
+	{
+		const activeUser = this.resolveRoomUser(roomCode, usernameOverride)
+		if (!activeUser) throw new Error('No user set')
+
+		const key = encryptionKey ?? extractKeyFromFragment() ?? await getRoomKey(roomCode)
+		const joinedWithoutKey = !key
+
+		try { this.webrtcManager?.disconnect() } catch (disconnectError) { console.debug('Disconnect before room join failed:', disconnectError) }
+		const { room, channels: chs, channelToSelect, messages: msgs } = await loadRoomForJoin(roomCode)
+
+		if (key)
+		{
+			await saveRoomKey(roomCode, key)
+		}
+		this.roomKeyRef.current = key
+		this.requestedRoomKeyPeerIds.clear()
+		this.missingKeyNoticePending = joinedWithoutKey
+		this.peerNames.clear()
+		this.pendingJoinAnnouncement = null
+
+		this.currentUserIdRef.current = activeUser.id
+		this.setCurrentRoom(room)
+		this.setChannels(chs)
+		this.setCurrentChannel(channelToSelect)
+		this.setMessages(msgs.slice(-INITIAL_HISTORY_MESSAGES))
+		localStorage.setItem('p2p-last-room', roomCode)
+
+		const mgr = new WebRTCManager(activeUser.id, activeUser.username, roomCode)
+		this.setupManager(mgr)
+		this.registerPush(mgr)
+		if (announceJoin)
+		{
+			this.pendingJoinAnnouncement = activeUser.username
+			const sent = await this.announcePresenceIntent(mgr, 'join', activeUser.username)
+			if (sent) this.pendingJoinAnnouncement = null
+		}
+	}
+
+	private leaveRoom = async (autoSwitchToOtherRoom = true, announceLeave = false) =>
+	{
+		const leavingRoomId = this.currentRoomRef.current?.id
+		const leavingUsername = this.currentUserRef.current?.username
+
+		if (announceLeave)
+		{
+			await this.announcePresenceIntent(this.webrtcManager, 'leave', leavingUsername)
+		}
+
+		localStorage.removeItem('p2p-last-room')
+		try { this.webrtcManager?.disconnect() } catch (e) { console.warn('Disconnect error (ignored):', e) }
+		this.setWebrtcManager(null)
+		this.setCurrentRoom(null)
+		this.setChannels([])
+		this.setCurrentChannel(null)
+		this.setMessages([])
+		this.setPeers([])
+		this.voice.cleanupVoice()
+		this.roomKeyRef.current = null
+		this.requestedRoomKeyPeerIds.clear()
+		this.peerPresenceState.clear()
+		this.peerNames.clear()
+		this.pendingJoinAnnouncement = null
+
+		if (leavingRoomId)
+		{
+			await deleteRoomHistory(leavingRoomId)
+			await deleteRoomKey(leavingRoomId)
+		}
+
+		if (autoSwitchToOtherRoom && leavingRoomId)
+		{
+			const allHistory = await getAllRoomHistory()
+			if (allHistory.length > 0)
+			{
+				const sorted = allHistory.sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+				try { await this.joinRoom(sorted[0].roomId) } catch (e) { console.error('Failed to auto-switch:', e) }
+			}
+		}
+	}
+
+	private sendMessage = async (content: string) =>
+	{
+		if (!this.currentUser || !this.currentChannel || this.currentChannel.type !== 'text') return
+		const message: Message = {
+			id: generateMessageId(), channelId: this.currentChannel.id,
+			userId: this.currentUser.id, username: this.currentUser.username,
+			content, timestamp: Date.now(), synced: false,
+		}
+		await saveMessage(message)
+		this.setMessages(prev => [...prev, message].slice(-MAX_IN_MEMORY_MESSAGES))
+
+		const key = this.roomKeyRef.current
+		let wireMessage = message
+		if (key)
+		{
+			const encrypted = await encryptText(content, key)
+			wireMessage = { ...message, content: encrypted }
+		}
+
+		this.webrtcManager?.sendMessage(wireMessage)
+
+		{
+			const preview = message.fileMetadata ? `📎 ${message.fileMetadata.name}` : content
+			const truncatedPreview = preview.length > 200 ? preview.slice(0, 197) + '…' : preview
+			const encryptedPreview = key ? await encryptText(truncatedPreview, key) : truncatedPreview
+			const pushMessage = { ...wireMessage }
+			delete pushMessage.fileMetadata
+			const pushPayload = JSON.stringify({
+				title: this.currentUser.username,
+				body: encryptedPreview,
+				roomId: this.currentRoom?.id,
+				encrypted: !!key,
+				message: pushMessage,
+			})
+			getPushEndpoint().then(endpoint =>
+			{
+				this.webrtcManager?.pushToOfflinePeers(pushPayload, endpoint ?? undefined)
+			})
+		}
+	}
+
+	private toggleReaction = async (messageId: string, emoji: string) =>
+	{
+		if (!this.currentUser) return
+		const msg = this.messages.find(m => m.id === messageId)
+		if (!msg) return
+		const existing = msg.reactions?.[emoji]?.find(r => r.userId === this.currentUser!.id)
+		const action: 'add' | 'remove' = existing ? 'remove' : 'add'
+		const reaction: ReactionEvent = {
+			messageId, emoji,
+			userId: this.currentUser.id,
+			username: this.currentUser.username,
+			action,
+		}
+		this.applyReaction(reaction)
+		this.webrtcManager?.sendReaction(reaction)
+	}
+
+	private sendGifMessage = async (gifUrl: string, searchQuery: string) =>
+	{
+		if (!this.currentUser || !this.currentChannel || this.currentChannel.type !== 'text') return
+		const message: Message = {
+			id: generateMessageId(), channelId: this.currentChannel.id,
+			userId: this.currentUser.id, username: this.currentUser.username,
+			content: searchQuery, timestamp: Date.now(), synced: false,
+			gifUrl,
+		}
+		await saveMessage(message)
+		this.setMessages(prev => [...prev, message].slice(-MAX_IN_MEMORY_MESSAGES))
+
+		const key = this.roomKeyRef.current
+		let wireMessage = message
+		if (key)
+		{
+			const encrypted = await encryptText(searchQuery, key)
+			wireMessage = { ...message, content: encrypted }
+		}
+
+		this.webrtcManager?.sendMessage(wireMessage)
+
+		{
+			const preview = `🎬 GIF: ${searchQuery}`
+			const encryptedPreview = key ? await encryptText(preview, key) : preview
+			const pushPayload = JSON.stringify({
+				title: this.currentUser.username,
+				body: encryptedPreview,
+				roomId: this.currentRoom?.id,
+				encrypted: !!key,
+				message: wireMessage,
+			})
+			getPushEndpoint().then(endpoint =>
+			{
+				this.webrtcManager?.pushToOfflinePeers(pushPayload, endpoint ?? undefined)
+			})
+		}
+	}
+
+	private authorizePeerAccess = async (messageId: string, peerId: string) =>
+	{
+		const roomKey = this.roomKeyRef.current
+		if (!this.webrtcManager || !roomKey) return
+
+		const shared = this.webrtcManager.shareRoomKey(peerId, roomKey)
+		if (!shared) return
+
+		const authorizedBy = this.currentUserRef.current?.username ?? 'A room member'
+		const original = this.messages.find(message => message.id === messageId)
+		if (!original) return
+
+		const updated: Message = {
+			...original,
+			content: `${original.systemActionTargetUsername ?? 'This user'} was authorized by ${authorizedBy}.`,
+			systemActionResolved: true,
+			systemActionResolvedBy: authorizedBy,
+			timestamp: Date.now(),
+		}
+
+		await saveMessage(updated)
+		this.setMessages(prev => prev.map(message => message.id === messageId ? updated : message))
+	}
+
+	// ── Render ──
+
+	render()
+	{
+		return (
+			<P2PContext.Provider value={{
+				currentUser: this.currentUser, currentRoom: this.currentRoom,
+				channels: this.channels, currentChannel: this.currentChannel,
+				messages: this.messages, peers: this.peers,
+				activeVoiceChannel: this.voice.activeVoiceChannel,
+				isMuted: this.voice.isMuted, isDeafened: this.voice.isDeafened,
+				isScreenSharing: this.voice.isScreenSharing,
+				isCameraOn: this.voice.isCameraOn,
+				localScreenShareStream: this.voice.screenShareStream,
+				localCameraStream: this.voice.localCameraStream,
+				watchedScreenShares: this.voice.watchedScreenShares,
+				localStream: this.voice.localStream,
+				remoteStreams: this.remoteStreams,
+				remoteScreenStreams: this.remoteScreenStreams,
+				remoteCameraStreams: this.remoteCameraStreams,
+				isSignalingConnected: this.isSignalingConnected,
+				hasRoomKey: !!this.roomKeyRef.current,
+				fileTransfers: this.fileTransfers,
+				speakingUsers: this.speakingUsers,
+				setUsername: this.setUsername,
+				createRoom: this.createRoom,
+				joinRoom: this.joinRoom,
+				leaveRoom: this.leaveRoom,
+				createChannel: (name, type) => this.createChannelAction(name, type, this.currentRoom?.id ?? null, this.webrtcManager),
+				selectChannel: (id) => this.selectChannelAction(id, this.currentRoom?.id, this.currentRoom?.name),
+				sendMessage: this.sendMessage,
+				sendGifMessage: this.sendGifMessage,
+				toggleReaction: this.toggleReaction,
+				authorizePeerAccess: this.authorizePeerAccess,
+				loadOlderMessages: async () =>
+				{
+					if (!this.webrtcManager || !this.currentChannel || this.currentChannel.type !== 'text') return 0
+					const beforeMessageId = this.messages.length > 0 ? this.messages[0].id : null
+					return this.requestOlderMessages(this.webrtcManager, this.currentChannel.id, beforeMessageId)
+				},
+				sendFile: (file) => this.sendFileAction(file, this.currentUser?.id ?? '', this.currentUser?.username ?? '', this.currentChannel?.id ?? '', this.currentChannel?.type ?? '', this.webrtcManager, this.setMessages),
+				registerPushForCurrentRoom: this.registerPushForCurrentRoom,
+				joinVoiceChannel: this.voice.joinVoiceChannel,
+				leaveVoiceChannel: this.voice.leaveVoiceChannel,
+				toggleMute: this.voice.toggleMute, toggleDeafen: this.voice.toggleDeafen,
+				startScreenShare: this.voice.startScreenShare, stopScreenShare: this.voice.stopScreenShare,
+				startCamera: this.voice.startCamera, stopCamera: this.voice.stopCamera,
+				watchScreenShare: this.voice.watchScreenShare,
+				stopWatchingScreenShare: this.voice.stopWatchingScreenShare,
+			}}>
+				{this.componentProps.children}
+			</P2PContext.Provider>
+		)
+	}
 }

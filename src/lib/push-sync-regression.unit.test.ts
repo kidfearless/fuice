@@ -248,8 +248,8 @@ describe('Push always sent regardless of sender settings (regression)', () => {
     // The sendMessage function should NOT contain loadNotificationSettings
     // before calling pushToOfflinePeers
     const sendMessageBlock = contextSrc.slice(
-      contextSrc.indexOf('const sendMessage = async'),
-      contextSrc.indexOf('const toggleReaction')
+      contextSrc.indexOf('private sendMessage = async'),
+      contextSrc.indexOf('private toggleReaction = async')
     )
 
     expect(sendMessageBlock).not.toContain('loadNotificationSettings')
@@ -268,8 +268,8 @@ describe('Push always sent regardless of sender settings (regression)', () => {
     )
 
     const sendGifBlock = contextSrc.slice(
-      contextSrc.indexOf('const sendGifMessage = async'),
-      contextSrc.indexOf('const authorizePeerAccess')
+      contextSrc.indexOf('private sendGifMessage = async'),
+      contextSrc.indexOf('private authorizePeerAccess = async')
     )
 
     expect(sendGifBlock).not.toContain('loadNotificationSettings')
@@ -291,9 +291,9 @@ describe('registerPush not gated on notification settings (regression)', () => {
       'utf8'
     )
 
-    // Find the registerPush callback
-    const registerPushStart = contextSrc.indexOf('const registerPush = useCallback')
-    const registerPushEnd = contextSrc.indexOf('}, [])', registerPushStart)
+    // Find the registerPush method
+    const registerPushStart = contextSrc.indexOf('private registerPush = async')
+    const registerPushEnd = contextSrc.indexOf('private registerPushForCurrentRoom', registerPushStart)
     const registerPushBlock = contextSrc.slice(registerPushStart, registerPushEnd)
 
     expect(registerPushBlock).not.toContain('desktopEnabled')
@@ -320,8 +320,8 @@ describe('Push re-registration on signaling reconnect (regression)', () => {
 
     // Find the onSignalingConnected callback in setupManager
     const setupBlock = contextSrc.slice(
-      contextSrc.indexOf('const setupManager = useCallback'),
-      contextSrc.indexOf('setWebrtcManager(manager)')
+      contextSrc.indexOf('private setupManager = '),
+      contextSrc.indexOf('this.setWebrtcManager(manager)')
     )
 
     // onSignalingConnected should call registerPush
@@ -348,8 +348,8 @@ describe('Push payload size safety (regression)', () => {
     )
 
     const sendMessageBlock = contextSrc.slice(
-      contextSrc.indexOf('const sendMessage = async'),
-      contextSrc.indexOf('const toggleReaction')
+      contextSrc.indexOf('private sendMessage = async'),
+      contextSrc.indexOf('private toggleReaction = async')
     )
 
     // Should truncate preview
@@ -366,8 +366,8 @@ describe('Push payload size safety (regression)', () => {
     )
 
     const sendMessageBlock = contextSrc.slice(
-      contextSrc.indexOf('const sendMessage = async'),
-      contextSrc.indexOf('const toggleReaction')
+      contextSrc.indexOf('private sendMessage = async'),
+      contextSrc.indexOf('private toggleReaction = async')
     )
 
     expect(sendMessageBlock).toContain('delete pushMessage.fileMetadata')
@@ -388,7 +388,7 @@ describe('SW push-message-received listener (regression)', () => {
     )
 
     // Must have a serviceWorker message listener
-    expect(contextSrc).toContain("navigator.serviceWorker.addEventListener('message', handler)")
+    expect(contextSrc).toContain("navigator.serviceWorker.addEventListener('message', this.handleSWMessage)")
     expect(contextSrc).toContain("event.data?.type === 'push-message-received'")
   })
 })

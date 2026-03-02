@@ -2,10 +2,15 @@ import { render, screen } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { createMockP2PContext } from '@/test/mockP2PContext'
 
-const mockContext = createMockP2PContext()
-vi.mock('@/lib/P2PContext', () => ({
-  useP2P: () => mockContext,
-}))
+const mockContext = vi.hoisted(() => ({})) as unknown as ReturnType<typeof createMockP2PContext>
+Object.assign(mockContext, createMockP2PContext())
+vi.mock('@/lib/P2PContext', async () => {
+  const { createContext } = await vi.importActual<typeof import('react')>('react')
+  return {
+    useP2P: () => mockContext,
+    P2PContext: createContext(mockContext),
+  }
+})
 
 vi.mock('@/lib/notifications', () => ({
   loadNotificationSettings: vi.fn().mockReturnValue({ soundEnabled: true, desktopEnabled: false, volume: 0.5 }),

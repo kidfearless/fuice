@@ -1,35 +1,47 @@
-import { useP2P } from '@/lib/P2PContext'
-import { useEffect, useRef } from 'react'
+import React, { Component } from 'react'
+import { P2PContext } from '@/lib/P2PContext'
 
-/**
- * Invisible component that manages audio playback for voice channels.
- * Stays mounted as long as the user is in a room, so audio persists
- * even when navigating away from the voice channel view.
- */
-export function VoiceAudioManager() {
-  const { activeVoiceChannel, remoteStreams, isDeafened } = useP2P()
-  const audioRefs = useRef<Map<string, HTMLAudioElement>>(new Map())
+interface VoiceAudioManagerProps {
+  p2p: ReturnType<typeof useP2P>
+}
 
-  // Attach remote streams to Audio elements and play
-  useEffect(() => {
+class VoiceAudioManagerClass extends Component<VoiceAudioManagerProps> {
+  private audioRefs = new Map<string, HTMLAudioElement>()
+  private get p2p() { return this.componentProps.p2p }
+
+  componentDidMount() {
+    this.updateAudio()
+  }
+
+  componentDidUpdate() {
+    this.updateAudio()
+  }
+
+  componentWillUnmount() {
+    this.cleanupAudio()
+  }
+
+  updateAudio = () => {
+    const activeVoiceChannel = this.p2p.activeVoiceChannel
+    const remoteStreams = this.p2p.remoteStreams
+    const isDeafened = this.p2p.isDeafened
+
     if (!activeVoiceChannel) {
-      // Not in a voice channel — tear down any lingering audio
-      audioRefs.current.forEach(audio => {
-        audio.pause()
-        audio.srcObject = null
-      })
-      audioRefs.current.clear()
+      this.cleanupAudio()
       return
     }
 
     // Add/update audio elements for current streams
     remoteStreams.forEach((stream, peerId) => {
-      let audio = audioRefs.current.get(peerId)
+      let audio = this.audioRefs.get(peerId)
       if (!audio) {
         audio = new Audio()
         audio.autoplay = true
-        audioRefs.current.set(peerId, audio)
+        this.audioRefs.set(peerId, audio)
       }
+      
+      audio.muted = isDeafened
+
       if (audio.srcObject !== stream) {
         audio.srcObject = stream
         audio.play().catch(err =>
@@ -39,33 +51,33 @@ export function VoiceAudioManager() {
     })
 
     // Remove audio elements for disconnected peers
-    audioRefs.current.forEach((audio, peerId) => {
+    this.audioRefs.forEach((audio, peerId) => {
       if (!remoteStreams.has(peerId)) {
         audio.pause()
         audio.srcObject = null
-        audioRefs.current.delete(peerId)
+        this.audioRefs.delete(peerId)
       }
     })
-  }, [activeVoiceChannel, remoteStreams])
+  }
 
-  // Handle deafen state without recreating audio elements
-  useEffect(() => {
-    audioRefs.current.forEach(audio => {
-      audio.muted = isDeafened
+  cleanupAudio = () => {
+    this.audioRefs.forEach(audio => {
+      audio.pause()
+      audio.srcObject = null
     })
-  }, [isDeafened])
+    this.audioRefs.clear()
+  }
 
-  // Cleanup on unmount (user leaves the room entirely)
-  useEffect(() => {
-    return () => {
-      audioRefs.current.forEach(audio => {
-        audio.pause()
-        audio.srcObject = null
-      })
-      audioRefs.current.clear()
-    }
-  }, [])
+  render() {
+    return null
+  }
+}
 
-  // This component renders nothing — it only manages audio
-  return null
+export class VoiceAudioManager extends Component {
+  static contextType = P2PContext
+
+  render() {
+    if (!this.context) return null
+    return <VoiceAudioManagerClass p2p={this.context as ReturnType<typeof useP2P>} />
+  }
 }

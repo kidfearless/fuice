@@ -1,14 +1,19 @@
-import { ComponentProps, createContext, useContext, useId } from "react"
+import {
+  Component,
+  ComponentProps,
+  createContext,
+  useContext,
+  useId,
+} from "react"
 import * as LabelPrimitive from "@radix-ui/react-label"
 import { Slot } from "@radix-ui/react-slot"
 import {
   Controller,
+  ControllerProps,
+  FieldPath,
+  FieldValues,
   FormProvider,
   useFormContext,
-  useFormState,
-  type ControllerProps,
-  type FieldPath,
-  type FieldValues,
 } from "react-hook-form"
 
 import { cn } from "@/lib/utils"
@@ -40,11 +45,19 @@ const FormField = <
   )
 }
 
+type FormItemContextValue = {
+  id: string
+}
+
+const FormItemContext = createContext<FormItemContextValue>(
+  {} as FormItemContextValue
+)
+
 const useFormField = () => {
   const fieldContext = useContext(FormFieldContext)
   const itemContext = useContext(FormItemContext)
-  const { getFieldState } = useFormContext()
-  const formState = useFormState({ name: fieldContext.name })
+  const { getFieldState, formState } = useFormContext()
+
   const fieldState = getFieldState(fieldContext.name, formState)
 
   if (!fieldContext) {
@@ -63,15 +76,13 @@ const useFormField = () => {
   }
 }
 
-type FormItemContextValue = {
-  id: string
+class FormItem extends Component<ComponentProps<"div">> {
+  render() {
+    return <FormItemWrapper {...this.componentProps} />
+  }
 }
 
-const FormItemContext = createContext<FormItemContextValue>(
-  {} as FormItemContextValue
-)
-
-function FormItem({ className, ...props }: ComponentProps<"div">) {
+function FormItemWrapper({ className, ...props }: ComponentProps<"div">) {
   const id = useId()
 
   return (
@@ -85,10 +96,13 @@ function FormItem({ className, ...props }: ComponentProps<"div">) {
   )
 }
 
-function FormLabel({
-  className,
-  ...props
-}: ComponentProps<typeof LabelPrimitive.Root>) {
+class FormLabel extends Component<ComponentProps<typeof LabelPrimitive.Root>> {
+  render() {
+    return <FormLabelWrapper {...this.componentProps} />
+  }
+}
+
+function FormLabelWrapper({ className, ...props }: ComponentProps<typeof LabelPrimitive.Root>) {
   const { error, formItemId } = useFormField()
 
   return (
@@ -102,7 +116,13 @@ function FormLabel({
   )
 }
 
-function FormControl({ ...props }: ComponentProps<typeof Slot>) {
+class FormControl extends Component<ComponentProps<typeof Slot>> {
+  render() {
+    return <FormControlWrapper {...this.componentProps} />
+  }
+}
+
+function FormControlWrapper({ ...props }: ComponentProps<typeof Slot>) {
   const { error, formItemId, formDescriptionId, formMessageId } = useFormField()
 
   return (
@@ -120,7 +140,13 @@ function FormControl({ ...props }: ComponentProps<typeof Slot>) {
   )
 }
 
-function FormDescription({ className, ...props }: ComponentProps<"p">) {
+class FormDescription extends Component<ComponentProps<"p">> {
+  render() {
+    return <FormDescriptionWrapper {...this.componentProps} />
+  }
+}
+
+function FormDescriptionWrapper({ className, ...props }: ComponentProps<"p">) {
   const { formDescriptionId } = useFormField()
 
   return (
@@ -133,9 +159,15 @@ function FormDescription({ className, ...props }: ComponentProps<"p">) {
   )
 }
 
-function FormMessage({ className, ...props }: ComponentProps<"p">) {
+class FormMessage extends Component<ComponentProps<"p">> {
+  render() {
+    return <FormMessageWrapper {...this.componentProps} />
+  }
+}
+
+function FormMessageWrapper({ className, children, ...props }: ComponentProps<"p">) {
   const { error, formMessageId } = useFormField()
-  const body = error ? String(error?.message ?? "") : props.children
+  const body = error ? String(error?.message) : children
 
   if (!body) {
     return null
@@ -145,7 +177,7 @@ function FormMessage({ className, ...props }: ComponentProps<"p">) {
     <p
       data-slot="form-message"
       id={formMessageId}
-      className={cn("text-destructive text-sm", className)}
+      className={cn("text-destructive text-sm font-medium", className)}
       {...props}
     >
       {body}

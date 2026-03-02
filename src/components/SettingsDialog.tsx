@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import React, { Component } from 'react'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -9,7 +9,7 @@ import { Separator } from '@/components/ui/separator'
 import { Slider } from '@/components/ui/slider'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import { faGear } from '@fortawesome/free-solid-svg-icons'
-import { useP2P } from '@/lib/P2PContext'
+import { P2PContext } from '@/lib/P2PContext'
 import { loadSettings, resetSettings, updateSettings, type StreamingSettings } from '@/lib/settings'
 import {
   loadNotificationSettings,
@@ -52,63 +52,96 @@ const CAMERA_RESOLUTION_OPTIONS = [
   { label: '1080p', value: 1080 },
 ]
 
-export function SettingsDialog() {
-  const { currentUser, currentRoom, currentChannel, setUsername, registerPushForCurrentRoom } = useP2P()
-  const [open, setOpen] = useState(false)
-  const [displayName, setDisplayName] = useState(currentUser?.username ?? '')
-  const [settings, setSettings] = useState(loadSettings())
-  const [notifSettings, setNotifSettings] = useState<NotificationSettings>(loadNotificationSettings())
-  const [notifPermission, setNotifPermission] = useState<NotificationPermission>(getNotificationPermission())
-  const [streamingSettings, setStreamingSettings] = useState<StreamingSettings>(loadSettings().streaming)
+interface SettingsDialogState {
+  open: boolean
+  displayName: string
+  settings: ReturnType<typeof loadSettings>
+  notifSettings: NotificationSettings
+  notifPermission: NotificationPermission
+  streamingSettings: StreamingSettings
+}
 
-  useEffect(() => {
-    setDisplayName(currentUser?.username ?? '')
-  }, [currentUser])
+class SettingsDialogClass extends Component<{ p2p: ReturnType<typeof useP2P> }, SettingsDialogState> {
+  constructor(props: { p2p: ReturnType<typeof useP2P> }) {
+    super(props)
+    const initialSettings = loadSettings()
+    this.state = {
+      open: false,
+      displayName: props.p2p.currentUser?.username ?? '',
+      settings: initialSettings,
+      notifSettings: loadNotificationSettings(),
+      notifPermission: getNotificationPermission(),
+      streamingSettings: initialSettings.streaming,
+    }
+  }
 
-  const fontScaleValue = useMemo(() => String(settings.fontScale), [settings.fontScale])
+  private get p2p() { return this.componentProps.p2p }
+  private get open() { return this.state.open }
+  private set open(open: boolean) { this.setState({ open }) }
+  private get displayName() { return this.state.displayName }
+  private set displayName(displayName: string) { this.setState({ displayName }) }
+  private get settings() { return this.state.settings }
+  private set settings(settings: ReturnType<typeof loadSettings>) { this.setState({ settings }) }
+  private get notifSettings() { return this.state.notifSettings }
+  private set notifSettings(notifSettings: NotificationSettings) { this.setState({ notifSettings }) }
+  private get notifPermission() { return this.state.notifPermission }
+  private set notifPermission(notifPermission: NotificationPermission) { this.setState({ notifPermission }) }
+  private get streamingSettings() { return this.state.streamingSettings }
+  private set streamingSettings(streamingSettings: StreamingSettings) { this.setState({ streamingSettings }) }
 
-  const handleUpdateDisplayName = () => {
+  componentDidUpdate(prevProps: { p2p: ReturnType<typeof useP2P> }) {
+    if (prevProps.p2p.currentUser !== this.p2p.currentUser) {
+      this.displayName = this.p2p.currentUser?.username ?? ''
+    }
+  }
+
+  handleUpdateDisplayName = () => {
+    const displayName = this.displayName
+    const setUsername = this.p2p.setUsername
     const trimmed = displayName.trim()
     if (!trimmed) return
     setUsername(trimmed)
     toast.success('Display name updated')
   }
 
-  const handleFontScaleChange = (value: string) => {
+  handleFontScaleChange = (value: string) => {
     const nextScale = Number(value)
     if (Number.isNaN(nextScale)) return
     const next = updateSettings({ fontScale: nextScale })
-    setSettings(next)
+    this.settings = next
   }
 
-  const handleDensityChange = (checked: boolean) => {
+  handleDensityChange = (checked: boolean) => {
     const next = updateSettings({ density: checked ? 'compact' : 'comfortable' })
-    setSettings(next)
+    this.settings = next
   }
 
-  const handleSoundToggle = (checked: boolean) => {
+  handleSoundToggle = (checked: boolean) => {
+    const notifSettings = this.notifSettings
     const next = { ...notifSettings, soundEnabled: checked }
-    setNotifSettings(next)
+    this.notifSettings = next
     saveNotificationSettings(next)
     if (checked) playNotificationSound(next.volume)
   }
 
-  const handleVolumeChange = (value: number[]) => {
+  handleVolumeChange = (value: number[]) => {
+    const notifSettings = this.notifSettings
     const vol = value[0]
     const next = { ...notifSettings, volume: vol }
-    setNotifSettings(next)
+    this.notifSettings = next
     saveNotificationSettings(next)
   }
 
-  const handleDesktopToggle = async (checked: boolean) => {
+  handleDesktopToggle = async (checked: boolean) => {
+    const registerPushForCurrentRoom = this.p2p.registerPushForCurrentRoom
+    const notifSettings = this.notifSettings
     if (checked) {
       const perm = await requestNotificationPermission()
-      setNotifPermission(perm)
+      this.notifPermission = perm
       if (perm !== 'granted') {
         toast.error('Notification permission was denied by your browser.')
         return
       }
-      // Subscribe to push so notifications arrive even when the app is closed
       const sub = await subscribeToPush()
       if (sub) {
         await registerPushForCurrentRoom(sub)
@@ -118,13 +151,16 @@ export function SettingsDialog() {
       await unsubscribeFromPush()
     }
     const next = { ...notifSettings, desktopEnabled: checked }
-    setNotifSettings(next)
+    this.notifSettings = next
     saveNotificationSettings(next)
   }
 
-  const handleTestNotification = async () => {
+  handleTestNotification = async () => {
+    const currentChannel = this.p2p.currentChannel
+    const currentRoom = this.p2p.currentRoom
+    const registerPushForCurrentRoom = this.p2p.registerPushForCurrentRoom
     const perm = await requestNotificationPermission()
-    setNotifPermission(perm)
+    this.notifPermission = perm
     if (perm !== 'granted') {
       toast.error('Notification permission was denied by your browser.')
       return
@@ -149,220 +185,227 @@ export function SettingsDialog() {
     toast.success('Test notification sent.')
   }
 
-  const handleStreamingChange = (key: keyof StreamingSettings, value: number) => {
+  handleStreamingChange = (key: keyof StreamingSettings, value: number) => {
+    const streamingSettings = this.streamingSettings
     const next = { ...streamingSettings, [key]: value }
-    setStreamingSettings(next)
+    this.streamingSettings = next
     updateSettings({ streaming: next })
   }
 
-  const handleReset = () => {
+  handleReset = () => {
     const next = resetSettings()
-    setSettings(next)
-    setStreamingSettings(next.streaming)
+    this.settings = next
+    this.streamingSettings = next.streaming
     toast.message('Settings reset to defaults')
   }
 
-  return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button variant="ghost" size="sm" className="w-full justify-start">
-          <FontAwesomeIcon icon={faGear} className="mr-2 text-[18px]" />
-          Settings
-        </Button>
-      </DialogTrigger>
-      <DialogContent className="sm:max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>Settings</DialogTitle>
-          <DialogDescription>Personalize your experience.</DialogDescription>
-        </DialogHeader>
+  render() {
+    const open = this.open
+    const displayName = this.displayName
+    const settings = this.settings
+    const notifSettings = this.notifSettings
+    const streamingSettings = this.streamingSettings
+    const fontScaleValue = String(settings.fontScale)
 
-        <div className="space-y-6">
-          <section className="space-y-3">
-            <div className="flex items-center justify-between">
-              <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Profile</h3>
-              <Button variant="outline" size="sm" onClick={handleReset}>Reset</Button>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="settings-display-name">Display name</Label>
-              <div className="flex flex-col gap-2 sm:flex-row">
-                <Input
-                  id="settings-display-name"
-                  value={displayName}
-                  onChange={(event) => setDisplayName(event.target.value)}
-                  placeholder="Enter display name"
-                />
-                <Button onClick={handleUpdateDisplayName} disabled={!displayName.trim()}>
-                  Update
-                </Button>
+    return (
+      <Dialog open={open} onOpenChange={(open) => { this.open = open }}>
+        <DialogTrigger asChild>
+          <Button variant="ghost" size="sm" className="w-full justify-start">
+            <FontAwesomeIcon icon={faGear} className="mr-2 text-[18px]" />
+            Settings
+          </Button>
+        </DialogTrigger>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Settings</DialogTitle>
+            <DialogDescription>Personalize your experience.</DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-6">
+            <section className="space-y-3">
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Profile</h3>
+                <Button variant="outline" size="sm" onClick={this.handleReset}>Reset</Button>
               </div>
-              <p className="text-xs text-muted-foreground">
-                Changes apply to new connections and future rooms.
-              </p>
-            </div>
-          </section>
-
-          <Separator />
-
-          <section className="space-y-3">
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Appearance</h3>
-            <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2">
-                <Label htmlFor="settings-font-size">Font size</Label>
-                <Select value={fontScaleValue} onValueChange={handleFontScaleChange}>
-                  <SelectTrigger id="settings-font-size" className="w-full">
-                    <SelectValue placeholder="Select size" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {FONT_SIZES.map((size) => (
-                      <SelectItem key={size.label} value={String(size.value)}>
-                        {size.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="flex items-center justify-between rounded-md border border-border bg-card px-4 py-3">
-                <div>
-                  <Label htmlFor="settings-density">Compact mode</Label>
-                  <p className="text-xs text-muted-foreground">Tighter spacing across the UI.</p>
+                <Label htmlFor="settings-display-name">Display name</Label>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <Input
+                    id="settings-display-name"
+                    value={displayName}
+                    onChange={(event) => { this.displayName = event.target.value }}
+                    placeholder="Enter display name"
+                  />
+                  <Button onClick={this.handleUpdateDisplayName} disabled={!displayName.trim()}>
+                    Update
+                  </Button>
                 </div>
-                <Switch
-                  id="settings-density"
-                  checked={settings.density === 'compact'}
-                  onCheckedChange={handleDensityChange}
-                />
+                <p className="text-xs text-muted-foreground">
+                  Changes apply to new connections and future rooms.
+                </p>
               </div>
-            </div>
-          </section>
+            </section>
 
-          <Separator />
+            <Separator />
 
-          <section className="space-y-3">
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Streaming</h3>
-            <p className="text-xs text-muted-foreground">Lower values reduce CPU &amp; bandwidth usage. Changes apply to the next stream you start.</p>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-2">
-                <Label htmlFor="settings-screen-fps">Screen share frame rate</Label>
-                <Select value={String(streamingSettings.screenShareFrameRate)} onValueChange={(v) => handleStreamingChange('screenShareFrameRate', Number(v))}>
-                  <SelectTrigger id="settings-screen-fps" className="w-full">
-                    <SelectValue placeholder="Select frame rate" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {FRAME_RATE_OPTIONS.map((o) => (
-                      <SelectItem key={o.value} value={String(o.value)}>{o.label}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="settings-screen-res">Screen share resolution</Label>
-                <Select value={String(streamingSettings.screenShareResolution)} onValueChange={(v) => handleStreamingChange('screenShareResolution', Number(v))}>
-                  <SelectTrigger id="settings-screen-res" className="w-full">
-                    <SelectValue placeholder="Select resolution" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {SCREEN_RESOLUTION_OPTIONS.map((o) => (
-                      <SelectItem key={o.value} value={String(o.value)}>{o.label}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="settings-cam-fps">Camera frame rate</Label>
-                <Select value={String(streamingSettings.cameraFrameRate)} onValueChange={(v) => handleStreamingChange('cameraFrameRate', Number(v))}>
-                  <SelectTrigger id="settings-cam-fps" className="w-full">
-                    <SelectValue placeholder="Select frame rate" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {FRAME_RATE_OPTIONS.map((o) => (
-                      <SelectItem key={o.value} value={String(o.value)}>{o.label}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="settings-cam-res">Camera resolution</Label>
-                <Select value={String(streamingSettings.cameraResolution)} onValueChange={(v) => handleStreamingChange('cameraResolution', Number(v))}>
-                  <SelectTrigger id="settings-cam-res" className="w-full">
-                    <SelectValue placeholder="Select resolution" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {CAMERA_RESOLUTION_OPTIONS.map((o) => (
-                      <SelectItem key={o.value} value={String(o.value)}>{o.label}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-          </section>
-
-          <Separator />
-
-          <section className="space-y-3">
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Notifications</h3>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="flex items-center justify-between rounded-md border border-border bg-card px-4 py-3">
-                <div>
-                  <Label htmlFor="settings-sound">Message sounds</Label>
-                  <p className="text-xs text-muted-foreground">Play a blip when a message arrives.</p>
+            <section className="space-y-3">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Appearance</h3>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="settings-font-size">Font size</Label>
+                  <Select value={fontScaleValue} onValueChange={this.handleFontScaleChange}>
+                    <SelectTrigger id="settings-font-size" className="w-full">
+                      <SelectValue placeholder="Select size" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {FONT_SIZES.map((size) => (
+                        <SelectItem key={size.label} value={String(size.value)}>
+                          {size.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
-                <Switch
-                  id="settings-sound"
-                  checked={notifSettings.soundEnabled}
-                  onCheckedChange={handleSoundToggle}
-                />
-              </div>
-              <div className="flex items-center justify-between rounded-md border border-border bg-card px-4 py-3">
-                <div>
-                  <Label htmlFor="settings-desktop-notif">Desktop notifications</Label>
-                  <p className="text-xs text-muted-foreground">
-                    {notifPermission === 'denied'
-                      ? 'Blocked by browser — update in site settings.'
-                      : 'Receive notifications even when the app is closed.'}
-                  </p>
+                <div className="flex items-center justify-between rounded-md border border-border bg-card px-4 py-3">
+                  <div>
+                    <Label htmlFor="settings-density">Compact mode</Label>
+                    <p className="text-xs text-muted-foreground">Tighter spacing across the UI.</p>
+                  </div>
+                  <Switch
+                    id="settings-density"
+                    checked={settings.density === 'compact'}
+                    onCheckedChange={this.handleDensityChange}
+                  />
                 </div>
-                <Switch
-                  id="settings-desktop-notif"
-                  checked={notifSettings.desktopEnabled && notifPermission !== 'denied'}
-                  onCheckedChange={handleDesktopToggle}
-                  disabled={notifPermission === 'denied'}
-                />
               </div>
-            </div>
-            {notifSettings.soundEnabled && (
-              <div className="space-y-2">
-                <Label>Notification volume</Label>
-                <Slider
-                  value={[notifSettings.volume]}
-                  min={0}
-                  max={1}
-                  step={0.1}
-                  onValueChange={handleVolumeChange}
-                  onValueCommit={(v) => playNotificationSound(v[0])}
-                  className="w-full max-w-xs"
-                />
-              </div>
-            )}
-            <div>
-              <Button type="button" variant="outline" size="sm" onClick={handleTestNotification}>
-                Send test notification
-              </Button>
-            </div>
-          </section>
+            </section>
 
-          <p className="text-xs text-muted-foreground">
-            Project repo:{' '}
-            <a
-              href="https://github.com/kidfearless/fuice"
-              target="_blank"
-              rel="noreferrer"
-              className="underline"
-            >
-              kidfearless/fuice
-            </a>
-          </p>
-        </div>
-      </DialogContent>
-    </Dialog>
-  )
+            <Separator />
+
+            <section className="space-y-3">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Streaming</h3>
+              <p className="text-xs text-muted-foreground">Lower values reduce CPU &amp; bandwidth usage. Changes apply to the next stream you start.</p>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="settings-screen-fps">Screen share frame rate</Label>
+                  <Select value={String(streamingSettings.screenShareFrameRate)} onValueChange={(v) => this.handleStreamingChange('screenShareFrameRate', Number(v))}>
+                    <SelectTrigger id="settings-screen-fps" className="w-full">
+                      <SelectValue placeholder="Select frame rate" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {FRAME_RATE_OPTIONS.map((o) => (
+                        <SelectItem key={o.value} value={String(o.value)}>{o.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="settings-screen-res">Screen share resolution</Label>
+                  <Select value={String(streamingSettings.screenShareResolution)} onValueChange={(v) => this.handleStreamingChange('screenShareResolution', Number(v))}>
+                    <SelectTrigger id="settings-screen-res" className="w-full">
+                      <SelectValue placeholder="Select resolution" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {SCREEN_RESOLUTION_OPTIONS.map((o) => (
+                        <SelectItem key={o.value} value={String(o.value)}>{o.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="settings-cam-fps">Camera frame rate</Label>
+                  <Select value={String(streamingSettings.cameraFrameRate)} onValueChange={(v) => this.handleStreamingChange('cameraFrameRate', Number(v))}>
+                    <SelectTrigger id="settings-cam-fps" className="w-full">
+                      <SelectValue placeholder="Select frame rate" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {FRAME_RATE_OPTIONS.map((o) => (
+                        <SelectItem key={o.value} value={String(o.value)}>{o.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="settings-cam-res">Camera resolution</Label>
+                  <Select value={String(streamingSettings.cameraResolution)} onValueChange={(v) => this.handleStreamingChange('cameraResolution', Number(v))}>
+                    <SelectTrigger id="settings-cam-res" className="w-full">
+                      <SelectValue placeholder="Select resolution" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {CAMERA_RESOLUTION_OPTIONS.map((o) => (
+                        <SelectItem key={o.value} value={String(o.value)}>{o.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            </section>
+
+            <Separator />
+
+            <section className="space-y-3">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Notifications</h3>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="flex items-center justify-between rounded-md border border-border bg-card px-4 py-3">
+                  <div>
+                    <Label htmlFor="settings-sound">Message sounds</Label>
+                    <p className="text-xs text-muted-foreground">Play a sound on new messages.</p>
+                  </div>
+                  <Switch
+                    id="settings-sound"
+                    checked={notifSettings.soundEnabled}
+                    onCheckedChange={this.handleSoundToggle}
+                  />
+                </div>
+                <div className="space-y-3 rounded-md border border-border bg-card px-4 py-3">
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="settings-volume">Volume</Label>
+                    <span className="text-xs font-mono">{notifSettings.volume}%</span>
+                  </div>
+                  <Slider
+                    id="settings-volume"
+                    value={[notifSettings.volume]}
+                    min={0}
+                    max={100}
+                    step={1}
+                    onValueChange={this.handleVolumeChange}
+                    disabled={!notifSettings.soundEnabled}
+                  />
+                </div>
+                <div className="flex items-center justify-between rounded-md border border-border bg-card px-4 py-3">
+                  <div>
+                    <Label htmlFor="settings-desktop">Desktop notifications</Label>
+                    <p className="text-xs text-muted-foreground">Alerts when the app is in background.</p>
+                  </div>
+                  <Switch
+                    id="settings-desktop"
+                    checked={notifSettings.desktopEnabled}
+                    onCheckedChange={this.handleDesktopToggle}
+                  />
+                </div>
+                <div className="flex items-center justify-center rounded-md border border-border bg-card px-4 py-3">
+                  <Button variant="outline" size="sm" className="w-full" onClick={this.handleTestNotification}>
+                    Send test notification
+                  </Button>
+                </div>
+              </div>
+            </section>
+          </div>
+
+          <div className="text-center text-xs text-muted-foreground">
+            <a href="https://github.com/kidfearless/fuice" target="_blank" rel="noopener noreferrer" className="hover:underline">kidfearless/fuice</a>
+          </div>
+        </DialogContent>
+      </Dialog>
+    )
+  }
+}
+
+export class SettingsDialog extends Component {
+  static contextType = P2PContext
+
+  render() {
+    if (!this.context) return null
+    return <SettingsDialogClass p2p={this.context as ReturnType<typeof useP2P>} />
+  }
 }

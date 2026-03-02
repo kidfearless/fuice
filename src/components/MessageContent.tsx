@@ -1,19 +1,23 @@
-import { useMemo } from 'react'
-import { renderDiscordMarkdown } from '@/lib/discordMarkdown'
+import React, { Component } from 'react'
 import { cn } from '@/lib/utils'
+import { renderDiscordMarkdown } from '@/lib/discordMarkdown'
 
 interface MessageContentProps {
   content: string
   className?: string
 }
 
-export function MessageContent({ content, className }: MessageContentProps) {
-  const html = useMemo(() => renderDiscordMarkdown(content), [content])
+export class MessageContent extends Component<MessageContentProps> {
+  private get content() { return this.componentProps.content }
+  private get className() { return this.componentProps.className }
 
-  return (
-    <div
-      className={cn('discord-markdown', className)}
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
-  )
+  render() {
+    const html = renderDiscordMarkdown(this.content)
+    return (
+      <div
+        className={cn("discord-markdown whitespace-pre-wrap break-words text-sm leading-relaxed", this.className)}
+        dangerouslySetInnerHTML={{ __html: html }}
+      />
+    )
+  }
 }

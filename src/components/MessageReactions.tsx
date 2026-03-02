@@ -1,207 +1,191 @@
-import { useMemo, useState } from 'react'
-import { useP2P } from '@/lib/P2PContext'
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { Input } from '@/components/ui/input'
+import React, { Component, type ChangeEvent } from 'react'
+import { P2PContext } from '@/lib/P2PContext'
+import type { P2PContextType } from '@/lib/P2PContextTypes'
+import { Button } from './ui/button'
+import { Input } from './ui/input'
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover'
+import { Plus } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
-const QUICK_EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '🎉', '🔥', '👀']
-const EMOJI_CATEGORIES: { label: string; emojis: string[] }[] = [
-  { label: 'Smileys', emojis: ['😀', '😃', '😄', '😁', '😅', '😂', '🤣', '😊', '😇', '🙂', '😉', '😍', '🥰', '😘', '😋', '😜', '🤪', '🤨', '🧐', '🤓', '😎', '🥳', '😏', '😒', '😞', '😔', '😟', '😕', '😢', '😭', '😤', '🤬', '😱', '😨', '😰', '😥', '🤗', '🤔', '🫡', '🤫', '🫢', '🤥', '😶', '🫠', '😐'] },
-  { label: 'Gestures', emojis: ['👍', '👎', '👏', '🙌', '🤝', '🙏', '✌️', '🤞', '🤟', '🤘', '👌', '🤙', '💪', '👋', '🫶', '❤️‍🔥'] },
-  { label: 'Hearts', emojis: ['❤️', '🧡', '💛', '💚', '💙', '💜', '🖤', '🤍', '🤎', '💔', '💕', '💖', '💗', '💘', '💝'] },
-  { label: 'Objects', emojis: ['🔥', '⭐', '🌟', '💯', '✅', '❌', '⚡', '💡', '🎯', '🏆', '🎉', '🎊', '🎁', '🚀', '👀', '💀', '☠️', '🤡', '💩', '👻'] },
+const COMMON_EMOJIS = [
+  { emoji: '👍', name: 'thumbs up' },
+  { emoji: '❤️', name: 'heart' },
+  { emoji: '😂', name: 'joy' },
+  { emoji: '😮', name: 'surprised' },
+  { emoji: '😢', name: 'sad' },
+  { emoji: '🔥', name: 'fire' },
+  { emoji: '👏', name: 'clap' },
+  { emoji: '🚀', name: 'rocket' },
 ]
 
-const EMOJI_KEYWORDS: Record<string, string[]> = {
-  '👍': ['thumbs', 'up', 'like', 'yes'],
-  '❤️': ['heart', 'love'],
-  '😂': ['laugh', 'lol', 'joy'],
-  '😮': ['wow', 'surprised', 'shock'],
-  '😢': ['sad', 'cry'],
-  '🎉': ['party', 'celebrate'],
-  '🔥': ['fire', 'lit', 'hot'],
-  '👀': ['eyes', 'watch', 'look'],
-  '🙏': ['pray', 'thanks'],
-  '👏': ['clap', 'applause'],
-  '💯': ['100', 'perfect'],
-}
+type ReactionUsers = Record<string, { userId: string; username: string }[]>
 
 interface MessageReactionsProps {
   messageId: string
-  reactions?: Record<string, { userId: string; username: string }[]>
+  reactions?: ReactionUsers
   compact?: boolean
-}
-
-export function MessageReactions({ messageId, reactions, compact }: MessageReactionsProps) {
-  const { toggleReaction, currentUser } = useP2P()
-
-  if (!reactions || Object.keys(reactions).length === 0) return null
-
-  return (
-    <div className={cn('flex flex-wrap items-center gap-1.5', compact ? 'mt-1' : 'mt-1.5')}>
-      {Object.entries(reactions).map(([emoji, users]) => {
-        const hasReacted = currentUser ? users.some(u => u.userId === currentUser.id) : false
-        const names = users.map(u => u.username).join(', ')
-        return (
-          <Tooltip key={emoji}>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                onClick={() => void toggleReaction(messageId, emoji)}
-                className={cn(
-                  'inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-sm leading-none transition-colors cursor-pointer select-none',
-                  hasReacted
-                    ? 'border-primary bg-primary/20 text-foreground'
-                    : 'border-border bg-muted/40 text-muted-foreground hover:bg-muted hover:text-foreground'
-                )}
-              >
-                <span className="text-[16px] leading-none">{emoji}</span>
-                <span className="text-sm font-semibold tabular-nums">{users.length}</span>
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="top" className="text-xs max-w-48">
-              {names}
-            </TooltipContent>
-          </Tooltip>
-        )
-      })}
-      <AddReactionButton messageId={messageId} />
-    </div>
-  )
+  p2p: P2PContextType
 }
 
 interface AddReactionButtonProps {
   messageId: string
-  className?: string
   onOpenChange?: (open: boolean) => void
+  p2p: P2PContextType
 }
 
-export function AddReactionButton({ messageId, className, onOpenChange }: AddReactionButtonProps) {
-  const { toggleReaction } = useP2P()
-  const [open, setOpen] = useState(false)
-  const [query, setQuery] = useState('')
+interface AddReactionButtonState {
+  isOpen: boolean
+  query: string
+}
 
-  const filteredCategories = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    if (!q) return EMOJI_CATEGORIES
+class MessageReactionsBase extends Component<MessageReactionsProps> {
+  private get p2p() { return this.componentProps.p2p }
+  private get messageId() { return this.componentProps.messageId }
+  private get reactions() { return this.componentProps.reactions }
+  private get compact() { return this.componentProps.compact }
 
-    return EMOJI_CATEGORIES
-      .map((category) => {
-        const emojis = category.emojis.filter((emoji) => {
-          if (emoji.includes(q)) return true
-          const keywords = EMOJI_KEYWORDS[emoji] ?? []
-          return keywords.some((keyword) => keyword.includes(q))
-        })
-        return { ...category, emojis }
-      })
-      .filter((category) => category.emojis.length > 0)
-  }, [query])
-
-  const handleSelect = (emoji: string) => {
-    void toggleReaction(messageId, emoji)
-    setQuery('')
-    setOpen(false)
-    onOpenChange?.(false)
+  private handleReactionClick = (emoji: string) => {
+    void this.p2p.toggleReaction(this.messageId, emoji)
   }
 
-  const handlePopoverOpenChange = (nextOpen: boolean) => {
-    setOpen(nextOpen)
-    onOpenChange?.(nextOpen)
-    if (!nextOpen) setQuery('')
+  render() {
+    const reactions = this.reactions
+    const compact = this.compact
+    const p2p = this.p2p
+    const currentUserId = p2p.currentUser?.id
+    const reactionEntries = Object.entries(reactions ?? {}).filter(([, users]) => users.length > 0)
+
+    if (reactionEntries.length === 0) {
+      return null
+    }
+
+    return (
+      <div className={cn('flex flex-wrap items-center gap-1 mt-1', compact && 'mt-0.5')}>
+        {reactionEntries.map(([emoji, users]) => {
+          const hasReacted = !!currentUserId && users.some((user) => user.userId === currentUserId)
+          return (
+            <Button
+              key={emoji}
+              variant="secondary"
+              size="sm"
+              className={cn(
+                'h-6 px-1.5 py-0 text-xs gap-1 rounded-full',
+                hasReacted && 'bg-primary/20 hover:bg-primary/30 border-primary/30 border'
+              )}
+              onClick={() => this.handleReactionClick(emoji)}
+            >
+              <span>{emoji}</span>
+              <span className={cn('font-medium', hasReacted ? 'text-primary' : 'text-muted-foreground')}>
+                {users.length}
+              </span>
+            </Button>
+          )
+        })}
+      </div>
+    )
+  }
+}
+
+class AddReactionButtonBase extends Component<AddReactionButtonProps, AddReactionButtonState> {
+  state: AddReactionButtonState = {
+    isOpen: false,
+    query: '',
   }
 
-  return (
-    <Popover open={open} onOpenChange={handlePopoverOpenChange}>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          className={cn(
-            'inline-flex h-8 w-8 items-center justify-center rounded-lg border border-border transition-colors cursor-pointer select-none',
-            'bg-muted/40 text-muted-foreground hover:bg-muted hover:text-foreground',
-            className
-          )}
-          aria-label="Add reaction"
-        >
-          <SmilePlusIcon />
-        </button>
-      </PopoverTrigger>
-      <PopoverContent
-        side="top"
-        align="start"
-        className="w-[min(96vw,34rem)] p-0"
-        onOpenAutoFocus={(e) => e.preventDefault()}
-      >
-        <div className="p-3 border-b border-border">
+  private get p2p() { return this.componentProps.p2p }
+  private get messageId() { return this.componentProps.messageId }
+  private get onOpenChange() { return this.componentProps.onOpenChange }
+  private get isOpen() { return this.state.isOpen }
+  private set isOpen(isOpen: boolean) { this.setState({ isOpen }) }
+  private get query() { return this.state.query }
+  private set query(query: string) { this.setState({ query }) }
+
+  private setOpen = (isOpen: boolean) => {
+    this.isOpen = isOpen
+    this.onOpenChange?.(isOpen)
+  }
+
+  private handleEmojiClick = (emoji: string) => {
+    void this.p2p.toggleReaction(this.messageId, emoji)
+    this.setOpen(false)
+    this.query = ''
+  }
+
+  private handleQueryChange = (event: ChangeEvent<HTMLInputElement>) => {
+    this.query = event.target.value
+  }
+
+  render() {
+    const isOpen = this.isOpen
+    const query = this.query
+    const normalized = query.trim().toLowerCase()
+    const filtered = normalized.length === 0
+      ? COMMON_EMOJIS
+      : COMMON_EMOJIS.filter((item) => item.name.includes(normalized) || item.emoji.includes(normalized))
+
+    return (
+      <Popover open={isOpen} onOpenChange={this.setOpen}>
+        <PopoverTrigger asChild>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-8 w-8 p-0 rounded-md"
+            aria-label="Add reaction"
+          >
+            <Plus className="h-4 w-4" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent className="w-64 p-2 space-y-2" side="top" align="end">
           <Input
             value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Find the perfect reaction"
-            className="h-10 text-base"
+            onChange={this.handleQueryChange}
+            placeholder="Search emojis"
             aria-label="Search emojis"
           />
-        </div>
-        <div className="px-3 py-2 border-b border-border">
-          <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1.5">Quick Picks</p>
-          <div className="grid grid-cols-8 gap-1">
-          {QUICK_EMOJIS.map(emoji => (
-            <button
-              key={emoji}
-              type="button"
-              onClick={() => handleSelect(emoji)}
-              className="h-10 flex items-center justify-center rounded-md hover:bg-muted text-2xl cursor-pointer transition-colors"
-            >
-              {emoji}
-            </button>
-          ))}
-          </div>
-        </div>
-        <div className="max-h-[22rem] overflow-y-auto px-3 py-3 space-y-3">
-          {filteredCategories.length === 0 && (
-            <p className="text-sm text-muted-foreground py-6 text-center">No matching emojis</p>
-          )}
-          {filteredCategories.map(cat => (
-            <div key={cat.label}>
-              <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1.5">{cat.label}</p>
-              <div className="grid grid-cols-8 sm:grid-cols-10 gap-1">
-                {cat.emojis.map(emoji => (
-                  <button
-                    key={emoji}
-                    type="button"
-                    onClick={() => handleSelect(emoji)}
-                    className="h-10 flex items-center justify-center rounded-md hover:bg-muted text-2xl cursor-pointer transition-colors"
-                  >
-                    {emoji}
-                  </button>
-                ))}
-              </div>
+          <div className="text-xs font-medium text-muted-foreground">Quick Picks</div>
+          {filtered.length > 0 ? (
+            <div className="grid grid-cols-8 gap-1">
+              {filtered.map((item) => (
+                <Button
+                  key={item.emoji}
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 w-8 p-0 text-base"
+                  onClick={() => this.handleEmojiClick(item.emoji)}
+                >
+                  {item.emoji}
+                </Button>
+              ))}
             </div>
-          ))}
-        </div>
-      </PopoverContent>
-    </Popover>
-  )
+          ) : (
+            <div className="text-xs text-muted-foreground">No matching emojis</div>
+          )}
+        </PopoverContent>
+      </Popover>
+    )
+  }
 }
 
-function SmilePlusIcon() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <circle cx="12" cy="12" r="10" />
-      <path d="M8 14s1.5 2 4 2 4-2 4-2" />
-      <line x1="9" y1="9" x2="9.01" y2="9" />
-      <line x1="15" y1="9" x2="15.01" y2="9" />
-      <line x1="20" y1="2" x2="20" y2="8" />
-      <line x1="17" y1="5" x2="23" y2="5" />
-    </svg>
-  )
+export class MessageReactions extends Component<Omit<MessageReactionsProps, 'p2p'>> {
+  static contextType = P2PContext
+
+  render() {
+    if (!this.context) return null
+    return <MessageReactionsBase {...this.componentProps} p2p={this.context as P2PContextType} />
+  }
+}
+
+export class AddReactionButton extends Component<Omit<AddReactionButtonProps, 'p2p'>> {
+  static contextType = P2PContext
+
+  render() {
+    if (!this.context) return null
+    return <AddReactionButtonBase {...this.componentProps} p2p={this.context as P2PContextType} />
+  }
 }
